@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Search, Plus, Download, Archive, ChevronDown, ImageIcon, Minus, Pencil, X } from "lucide-react";
+import { Search, Plus, Download, Archive, ChevronDown, ImageIcon, Minus, Pencil, X, Filter } from "lucide-react";
 import { useInventory } from "../context/inventory-context";
 import { useAuth } from "../context/auth-context";
 import { Product, DailyInventory } from "../types";
@@ -28,6 +28,7 @@ export function InventoryPage() {
   const [brandFilter, setBrandFilter] = useState("Brand:");
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [showBrandDropdown, setShowBrandDropdown] = useState(false);
+  const [showMovementOnly, setShowMovementOnly] = useState(false);
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [selectedInventory, setSelectedInventory] = useState<DailyInventory | null>(null);
@@ -73,6 +74,16 @@ export function InventoryPage() {
 
     return matchesSearch && matchesCategory && matchesBrand;
   });
+
+  const movedProductIds = new Set(
+    inventory
+      .filter((item) => item.in > 0 || item.out > 0)
+      .map((item) => item.productId)
+  );
+
+  const displayedProducts = showMovementOnly
+    ? filteredProducts.filter((product) => movedProductIds.has(product.id))
+    : filteredProducts;
 
   const handleRowClick = (product: Product) => {
     const inv = inventory.find((i) => i.productId === product.id);
@@ -226,6 +237,19 @@ export function InventoryPage() {
           )}
 
           <div className="flex items-center gap-3 ml-auto">
+            <button
+              onClick={() => setShowMovementOnly((prev) => !prev)}
+              className={`flex items-center gap-2 px-3 py-2 border rounded-xl text-xs font-semibold transition-all duration-200 ${
+                showMovementOnly
+                  ? "border-[#8B2E2E] bg-[#8B2E2E]/10 text-[#8B2E2E]"
+                  : "border-gray-300 bg-white text-gray-600 hover:bg-gray-50"
+              }`}
+              title="Show only products with stock movement for selected date"
+            >
+              <Filter className="w-3.5 h-3.5" />
+              {showMovementOnly ? "Movement Only" : "All Products"}
+            </button>
+
             {/* Category Dropdown */}
             <div className="relative">
               <button
@@ -374,7 +398,7 @@ export function InventoryPage() {
               </tr>
             </thead>
             <tbody>
-              {filteredProducts.map((product) => {
+              {displayedProducts.map((product) => {
                 const inv = inventory.find((i) => i.productId === product.id);
                 const isSelected = selectedProduct?.id === product.id;
                 const isSelectedForDelete = selectedForDelete.has(product.id);
@@ -392,6 +416,18 @@ export function InventoryPage() {
                   />
                 );
               })}
+              {displayedProducts.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={deleteMode ? 11 : 10}
+                    className="py-8 text-center text-sm text-gray-500"
+                  >
+                    {showMovementOnly
+                      ? "No products with movement for this date."
+                      : "No products match the current filters."}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
