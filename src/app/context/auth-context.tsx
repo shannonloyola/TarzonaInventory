@@ -1,14 +1,32 @@
 import { createContext, useContext, useState, ReactNode, useEffect } from "react";
-import { AuthContextType, User, Role } from "../types";
+import { AuthContextType, User, Role, StaffPermissions } from "../types";
 import { getSupabase, isSupabaseConfigured } from "../../lib/supabase";
 import { getSession, setSession, clearSession, SessionData } from "../../lib/db-utils";
 import bcrypt from "bcryptjs";
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+type StaffPermissionRow = {
+  can_add_product?: boolean | null;
+  can_delete_product?: boolean | null;
+  can_edit_product?: boolean | null;
+  can_grant_admin?: boolean | null;
+};
+
+function normalizeStaffPermissions(perms: StaffPermissionRow | null | undefined): StaffPermissions {
+  const canEdit = !!perms?.can_edit_product;
+  return {
+    addProduct: !!perms?.can_add_product,
+    deleteProduct: !!perms?.can_delete_product,
+    editProduct: canEdit,
+    // Current schema has no separate item-level flags, so edit access also unlocks edit-mode item controls.
+    addItem: canEdit,
+    deleteItem: canEdit,
+  };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [permissions, setPermissions] = useState<any>({});
 
   // Restore session on mount
   useEffect(() => {
@@ -31,34 +49,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const supabase = getSupabase();
       
       // Load staff permissions if staff role
-      let userPermissions = {};
+      let userPermissions: StaffPermissions | undefined = undefined;
       if (session.role === 'staff') {
         const { data: perms } = await supabase
           .from('staff_permissions')
           .select('*')
           .eq('staff_profile_id', session.profile_id)
-          .single();
-        
-        if (perms) {
-          userPermissions = {
-            addProduct: perms.can_add_product,
-            deleteProduct: perms.can_delete_product,
-            editProduct: perms.can_edit_product,
-            grantAdmin: perms.can_grant_admin,
-          };
-        }
+          .maybeSingle();
+        userPermissions = normalizeStaffPermissions((perms || null) as StaffPermissionRow | null);
       }
 
       setUser({
         id: session.profile_id,
         username: session.username,
-        fullName: session.full_name,
+        name: session.full_name,
         email: session.email || '',
         role: session.role === 'admin' ? 'Admin' : 'Staff',
         password: '', // Don't store password in memory
         permissions: userPermissions,
       });
-      setPermissions(userPermissions);
     } catch (err) {
       console.error('Failed to load user from session:', err);
       clearSession();
@@ -115,22 +124,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       // Load staff permissions if staff role
-      let userPermissions = {};
+      let userPermissions: StaffPermissions | undefined = undefined;
       if (actualRole === 'staff') {
         const { data: perms } = await supabase
           .from('staff_permissions')
           .select('*')
           .eq('staff_profile_id', profile.id)
-          .single();
-        
-        if (perms) {
-          userPermissions = {
-            addProduct: perms.can_add_product,
-            deleteProduct: perms.can_delete_product,
-            editProduct: perms.can_edit_product,
-            grantAdmin: perms.can_grant_admin,
-          };
-        }
+          .maybeSingle();
+        userPermissions = normalizeStaffPermissions((perms || null) as StaffPermissionRow | null);
       }
 
       // Create session
@@ -147,13 +148,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser({
         id: profile.id,
         username: profile.username,
-        fullName: profile.full_name,
+        name: profile.full_name,
         email: profile.email || '',
         role: actualRole === 'admin' ? 'Admin' : 'Staff',
         password: '', // Don't store password
         permissions: userPermissions,
       });
-      setPermissions(userPermissions);
 
       return true;
     } catch (err) {
@@ -164,13 +164,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = () => {
     setUser(null);
-    setPermissions({});
     clearSession();
   };
 
+  // Keep current staff permission flags in sync with Admin changes.
+  useEffect(() => {
+    if (!user?.id || user.role !== "Staff" || !isSupabaseConfigured()) return;
+
+    let disposed = false;
+
+    const refreshStaffPermissions = async () => {
+      try {
+        const supabase = getSupabase();
+        const { data: perms } = await supabase
+          .from("staff_permissions")
+          .select("*")
+          .eq("staff_profile_id", user.id)
+          .maybeSingle();
+
+        if (disposed) return;
+
+        const normalized = normalizeStaffPermissions((perms || null) as StaffPermissionRow | null);
+        setUser((prev) => {
+          if (!prev || prev.id !== user.id) return prev;
+          return { ...prev, permissions: normalized };
+        });
+      } catch (err) {
+        console.error("Failed to refresh staff permissions:", err);
+      }
+    };
+
+    void refreshStaffPermissions();
+    const timer = window.setInterval(() => {
+      void refreshStaffPermissions();
+    }, 5000);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [user?.id, user?.role]);
+
   const isAdmin = user?.role === "Admin";
 
-  const hasPermission = (permission: keyof typeof user.permissions): boolean => {
+  const hasPermission = (permission: keyof StaffPermissions): boolean => {
     if (isAdmin) return true;
     if (!user?.permissions) return false;
     return user.permissions[permission] === true;

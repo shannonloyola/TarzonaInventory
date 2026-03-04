@@ -46,6 +46,17 @@ type TxnRow = {
   note: string | null;
 };
 
+type GenericRow = Record<string, unknown>;
+
+type NormalizedSnapshot = {
+  productId: string;
+  snapshotDate: string; // YYYY-MM-DD
+  beginningQty: number;
+  stockInQty: number;
+  stockOutQty: number;
+  endQty: number;
+};
+
 const uiDateFormat = "M-d-yy";
 const dbDateFormat = "yyyy-MM-dd";
 
@@ -63,6 +74,75 @@ function toUiDate(dbDate: string): string {
   const parsed = new Date(`${dbDate}T00:00:00`);
   if (!isValid(parsed)) return todayUiDate();
   return format(parsed, uiDateFormat);
+}
+
+function getStringValue(row: GenericRow, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed.length > 0) return trimmed;
+    }
+  }
+  return null;
+}
+
+function getNumberValue(row: GenericRow, keys: string[], fallback = 0): number {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return fallback;
+}
+
+function normalizeNameKey(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizeSnapshotRow(
+  row: GenericRow,
+  productNameToId: Map<string, string>
+): NormalizedSnapshot | null {
+  const snapshotDate = getStringValue(row, ["snapshot_date", "date", "inventory_date", "business_date"]);
+  if (!snapshotDate) return null;
+
+  const asDbDate = snapshotDate.slice(0, 10);
+  const parsedDbDate = parse(asDbDate, dbDateFormat, new Date());
+  if (!isValid(parsedDbDate)) return null;
+  const normalizedDate = format(parsedDbDate, dbDateFormat);
+
+  let productId = getStringValue(row, ["product_id", "productid", "product_uuid"]);
+  if (!productId) {
+    const productName = getStringValue(row, ["product_name", "display_name", "name", "item_name"]);
+    if (!productName) return null;
+    productId = productNameToId.get(normalizeNameKey(productName)) || null;
+    if (!productId) return null;
+  }
+
+  const beginningQty = getNumberValue(row, ["beginning_qty", "beg_qty", "beg", "opening_qty"]);
+  const stockInQty = getNumberValue(row, ["stock_in_qty", "stockin_qty", "stock_in", "in_qty", "in"]);
+  const stockOutQty = getNumberValue(row, ["stock_out_qty", "stockout_qty", "stock_out", "out_qty", "out"]);
+  const endQty = getNumberValue(row, ["end_qty", "ending_qty", "end"], beginningQty + stockInQty - stockOutQty);
+
+  return {
+    productId,
+    snapshotDate: normalizedDate,
+    beginningQty,
+    stockInQty,
+    stockOutQty,
+    endQty,
+  };
+}
+
+function isMissingTableError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const maybeCode = (error as { code?: unknown }).code;
+  const maybeMessage = String((error as { message?: unknown }).message || "");
+  return maybeCode === "42P01" || maybeMessage.toLowerCase().includes("does not exist");
 }
 
 function mapProductRow(row: ProductRow): Product {
@@ -134,40 +214,103 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       try {
         const supabase = getSupabase();
 
-        const [{ data: productRows, error: productError }, { data: snapshotRows, error: snapshotError }, { data: txnRows, error: txnError }] =
-          await Promise.all([
-            supabase
-              .from("products")
-              .select("id, display_name, brand, size, category, price, image_url, archived")
-              .order("created_at", { ascending: true }),
-            supabase
-              .from("inventory_snapshot")
-              .select("product_id, snapshot_date, beginning_qty, stock_in_qty, stock_out_qty, end_qty")
-              .order("snapshot_date", { ascending: false }),
-            supabase
-              .from("inventory_transactions")
-              .select("id, created_at, actor_username, actor_role, product_id, product_name, note")
-              .order("created_at", { ascending: false })
-              .limit(500),
-          ]);
+        const { data: productRows, error: productError } = await supabase
+          .from("products")
+          .select("id, display_name, brand, size, category, price, image_url, archived")
+          .order("created_at", { ascending: true });
 
         if (productError) throw productError;
-        if (snapshotError) throw snapshotError;
-        if (txnError) throw txnError;
 
         const mappedProducts = (productRows || []).map((row) => mapProductRow(row as ProductRow));
+        const productNameToId = new Map<string, string>();
+        mappedProducts.forEach((product) => {
+          productNameToId.set(normalizeNameKey(product.name), product.id);
+        });
+
+        const [
+          { data: snapshotRows, error: snapshotError },
+          { data: txnRows, error: txnError },
+          { data: stagingRows, error: stagingError },
+        ] = await Promise.all([
+          supabase
+            .from("inventory_snapshot")
+            .select("product_id, snapshot_date, beginning_qty, stock_in_qty, stock_out_qty, end_qty")
+            .order("snapshot_date", { ascending: false }),
+          supabase
+            .from("inventory_transactions")
+            .select("id, created_at, actor_username, actor_role, product_id, product_name, note")
+            .order("created_at", { ascending: false })
+            .limit(500),
+          supabase.from("staging_snapshots").select("*").limit(20000),
+        ]);
+
+        if (snapshotError) throw snapshotError;
+        if (txnError) throw txnError;
+        if (stagingError && !isMissingTableError(stagingError)) {
+          console.warn("Failed to read staging_snapshots:", stagingError);
+        }
+
+        const normalizedPrimarySnapshots: NormalizedSnapshot[] = (snapshotRows || []).map((row) => {
+          const snapshot = row as SnapshotRow;
+          return {
+            productId: snapshot.product_id,
+            snapshotDate: snapshot.snapshot_date,
+            beginningQty: Number(snapshot.beginning_qty || 0),
+            stockInQty: Number(snapshot.stock_in_qty || 0),
+            stockOutQty: Number(snapshot.stock_out_qty || 0),
+            endQty: Number(snapshot.end_qty || 0),
+          };
+        });
+
+        const normalizedStagingSnapshots: NormalizedSnapshot[] = ((stagingRows || []) as GenericRow[])
+          .map((row) => normalizeSnapshotRow(row, productNameToId))
+          .filter((row): row is NormalizedSnapshot => row !== null);
+
+        const primaryKeys = new Set(
+          normalizedPrimarySnapshots.map((s) => `${s.productId}__${s.snapshotDate}`)
+        );
+        const stagingOnly = normalizedStagingSnapshots.filter(
+          (s) => !primaryKeys.has(`${s.productId}__${s.snapshotDate}`)
+        );
+
+        if (stagingOnly.length > 0) {
+          const { error: backfillError } = await supabase.from("inventory_snapshot").upsert(
+            stagingOnly.map((s) => ({
+              product_id: s.productId,
+              snapshot_date: s.snapshotDate,
+              beginning_qty: s.beginningQty,
+              stock_in_qty: s.stockInQty,
+              stock_out_qty: s.stockOutQty,
+              end_qty: s.endQty,
+            })),
+            { onConflict: "product_id,snapshot_date" }
+          );
+
+          if (backfillError) {
+            console.warn("Failed to backfill staging snapshots into inventory_snapshot:", backfillError);
+          }
+        }
+
+        const mergedSnapshots = [...normalizedPrimarySnapshots];
+        const mergedKeys = new Set(mergedSnapshots.map((s) => `${s.productId}__${s.snapshotDate}`));
+        stagingOnly.forEach((s) => {
+          const key = `${s.productId}__${s.snapshotDate}`;
+          if (!mergedKeys.has(key)) {
+            mergedSnapshots.push(s);
+            mergedKeys.add(key);
+          }
+        });
 
         const sheetMap = new Map<string, DailyInventory[]>();
-        (snapshotRows || []).forEach((row) => {
-          const snapshot = row as SnapshotRow;
-          const uiDate = toUiDate(snapshot.snapshot_date);
+        mergedSnapshots.forEach((snapshot) => {
+          const uiDate = toUiDate(snapshot.snapshotDate);
           const item: DailyInventory = {
-            productId: snapshot.product_id,
-            beg: Number(snapshot.beginning_qty || 0),
-            in: Number(snapshot.stock_in_qty || 0),
-            total: Number(snapshot.beginning_qty || 0) + Number(snapshot.stock_in_qty || 0),
-            out: Number(snapshot.stock_out_qty || 0),
-            end: Number(snapshot.end_qty || 0),
+            productId: snapshot.productId,
+            beg: snapshot.beginningQty,
+            in: snapshot.stockInQty,
+            total: snapshot.beginningQty + snapshot.stockInQty,
+            out: snapshot.stockOutQty,
+            end: snapshot.endQty,
           };
 
           const existing = sheetMap.get(uiDate) || [];
@@ -175,16 +318,24 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
           sheetMap.set(uiDate, existing);
         });
 
-        const mappedSheets: InventorySheet[] = Array.from(sheetMap.entries()).map(([date, items]) => ({
-          date,
-          items,
-        }));
+        const mappedSheets: InventorySheet[] = Array.from(sheetMap.entries())
+          .map(([date, items]) => ({ date, items }))
+          .sort((a, b) => {
+            const dateA = parse(a.date, uiDateFormat, new Date());
+            const dateB = parse(b.date, uiDateFormat, new Date());
+            return dateB.getTime() - dateA.getTime();
+          });
 
         const mappedLogs = (txnRows || []).map((row) => mapTxnToActivityLog(row as TxnRow));
 
         setProducts(mappedProducts);
         setInventorySheets(mappedSheets);
         setActivityLogs(mappedLogs);
+        if (mappedSheets.length > 0) {
+          setSelectedDate((prev) =>
+            mappedSheets.some((sheet) => sheet.date === prev) ? prev : mappedSheets[0].date
+          );
+        }
       } catch (err) {
         console.error("Failed to load Supabase inventory data:", err);
         toast.error("Failed to load Supabase inventory data. Using local mock data.");
@@ -192,7 +343,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     };
 
     void loadFromSupabase();
-  }, [supabaseConfigured]);
+  }, [supabaseConfigured, user?.id]);
 
   const getInventoryForDate = (date: string): DailyInventory[] => {
     const sheet = inventorySheets.find((s) => s.date === date);
