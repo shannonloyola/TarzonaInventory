@@ -4,7 +4,7 @@ import { User, StaffPermissions } from "../../types";
 import { toast } from "sonner";
 import { getSupabase, isSupabaseConfigured } from "../../../lib/supabase";
 import bcrypt from "bcryptjs";
-import { UserPlus } from "lucide-react";
+import { UserPlus, ChevronDown } from "lucide-react";
 
 type ProfileRow = {
   id: string;
@@ -19,6 +19,7 @@ type StaffPermRow = {
   can_add_product: boolean;
   can_delete_product: boolean;
   can_edit_product: boolean;
+  can_archive_product?: boolean | null;
   can_grant_admin: boolean;
 };
 
@@ -40,13 +41,24 @@ const defaultNewUserForm: NewUserForm = {
   confirmPassword: "",
 };
 
+function isValidEmailAddress(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
 const defaultStaffPerms: StaffPermissions = {
   addProduct: false,
   deleteProduct: false,
   editProduct: true,
+  archiveProduct: true,
   addItem: false,
   deleteItem: false,
 };
+
+function isMissingArchivePermissionColumn(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const message = String((error as { message?: unknown }).message || "").toLowerCase();
+  return message.includes("can_archive_product") && message.includes("column");
+}
 
 export function TeamManagementPage() {
   const { user: currentUser } = useAuth();
@@ -55,9 +67,14 @@ export function TeamManagementPage() {
   const [editedPermissions, setEditedPermissions] = useState<StaffPermissions | null>(null);
   const [grantAdminAccess, setGrantAdminAccess] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [showDeleteUserModal, setShowDeleteUserModal] = useState(false);
   const [adminPassword, setAdminPassword] = useState("");
+  const [deleteTargetUser, setDeleteTargetUser] = useState<User | null>(null);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deletePasswordError, setDeletePasswordError] = useState("");
   const [passwordError, setPasswordError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeletingUser, setIsDeletingUser] = useState(false);
 
   const [showAddUserModal, setShowAddUserModal] = useState(false);
   const [newUserForm, setNewUserForm] = useState<NewUserForm>(defaultNewUserForm);
@@ -76,7 +93,11 @@ export function TeamManagementPage() {
 
     try {
       const supabase = getSupabase();
-      const [{ data: profiles, error: profileError }, { data: perms, error: permsError }] =
+      const [
+        { data: profiles, error: profileError },
+        { data: perms, error: permsError },
+        { data: accounts, error: accountsError },
+      ] =
         await Promise.all([
           supabase
             .from("profiles")
@@ -84,16 +105,26 @@ export function TeamManagementPage() {
             .order("created_at", { ascending: true }),
           supabase
             .from("staff_permissions")
-            .select("staff_profile_id, can_add_product, can_delete_product, can_edit_product, can_grant_admin"),
+            .select("*"),
+          supabase
+            .from("user_accounts")
+            .select("profile_id, is_active"),
         ]);
 
       if (profileError) throw profileError;
       if (permsError) throw permsError;
+      if (accountsError) throw accountsError;
 
       const permsMap = new Map<string, StaffPermRow>();
       (perms || []).forEach((perm) => {
         const row = perm as StaffPermRow;
         permsMap.set(row.staff_profile_id, row);
+      });
+
+      const activeMap = new Map<string, boolean>();
+      (accounts || []).forEach((account) => {
+        const row = account as { profile_id: string; is_active: boolean };
+        activeMap.set(row.profile_id, !!row.is_active);
       });
 
       const mapped: User[] = (profiles || []).map((p) => {
@@ -113,12 +144,16 @@ export function TeamManagementPage() {
                 addProduct: !!staffPerm?.can_add_product,
                 deleteProduct: !!staffPerm?.can_delete_product,
                 editProduct: !!staffPerm?.can_edit_product,
+                archiveProduct:
+                  typeof staffPerm?.can_archive_product === "boolean"
+                    ? staffPerm.can_archive_product
+                    : !!staffPerm?.can_edit_product,
                 addItem: false,
                 deleteItem: false,
               }
             : undefined,
         };
-      });
+      }).filter((row) => activeMap.get(row.id) !== false);
 
       setUsers(mapped);
     } catch (err) {
@@ -142,6 +177,7 @@ export function TeamManagementPage() {
           addProduct: false,
           editProduct: false,
           deleteProduct: false,
+          archiveProduct: false,
           addItem: false,
           deleteItem: false,
         }
@@ -154,6 +190,7 @@ export function TeamManagementPage() {
       addProduct: true,
       editProduct: true,
       deleteProduct: true,
+      archiveProduct: true,
       addItem: false,
       deleteItem: false,
     });
@@ -225,16 +262,32 @@ export function TeamManagementPage() {
             .eq("id", editingUserId);
           if (profileError) throw profileError;
 
-          const { error: permsError } = await supabase.from("staff_permissions").upsert(
-            {
-              staff_profile_id: editingUserId,
-              can_add_product: editedPermissions.addProduct,
-              can_delete_product: editedPermissions.deleteProduct,
-              can_edit_product: editedPermissions.editProduct,
-              can_grant_admin: false,
-            },
-            { onConflict: "staff_profile_id" }
-          );
+          const upsertPayload = {
+            staff_profile_id: editingUserId,
+            can_add_product: editedPermissions.addProduct,
+            can_delete_product: editedPermissions.deleteProduct,
+            can_edit_product: editedPermissions.editProduct,
+            can_archive_product: editedPermissions.archiveProduct,
+            can_grant_admin: false,
+          };
+
+          let { error: permsError } = await supabase
+            .from("staff_permissions")
+            .upsert(upsertPayload, { onConflict: "staff_profile_id" });
+
+          // Backward compatibility: support databases without can_archive_product column yet.
+          if (permsError && isMissingArchivePermissionColumn(permsError)) {
+            ({ error: permsError } = await supabase.from("staff_permissions").upsert(
+              {
+                staff_profile_id: editingUserId,
+                can_add_product: editedPermissions.addProduct,
+                can_delete_product: editedPermissions.deleteProduct,
+                can_edit_product: editedPermissions.editProduct,
+                can_grant_admin: false,
+              },
+              { onConflict: "staff_profile_id" }
+            ));
+          }
           if (permsError) throw permsError;
         }
 
@@ -277,8 +330,12 @@ export function TeamManagementPage() {
       const password = newUserForm.password;
       const confirmPassword = newUserForm.confirmPassword;
 
-      if (!fullName || !username || !password) {
-        setAddUserError("Full name, username, and password are required.");
+      if (!fullName || !username || !email || !password) {
+        setAddUserError("Full name, username, email, and password are required.");
+        return;
+      }
+      if (!isValidEmailAddress(email)) {
+        setAddUserError("Please enter a valid email address.");
         return;
       }
       if (password.length < 6) {
@@ -323,15 +380,31 @@ export function TeamManagementPage() {
         if (accountError) throw accountError;
 
         if (role === "staff") {
-          const { error: permsError } = await supabase
+          const insertPayload = {
+            staff_profile_id: profile.id,
+            can_add_product: newStaffPermissions.addProduct,
+            can_delete_product: newStaffPermissions.deleteProduct,
+            can_edit_product: newStaffPermissions.editProduct,
+            can_archive_product: newStaffPermissions.archiveProduct,
+            can_grant_admin: false,
+          };
+
+          let { error: permsError } = await supabase
             .from("staff_permissions")
-            .insert({
-              staff_profile_id: profile.id,
-              can_add_product: newStaffPermissions.addProduct,
-              can_delete_product: newStaffPermissions.deleteProduct,
-              can_edit_product: newStaffPermissions.editProduct,
-              can_grant_admin: false,
-            });
+            .insert(insertPayload);
+
+          // Backward compatibility: support databases without can_archive_product column yet.
+          if (permsError && isMissingArchivePermissionColumn(permsError)) {
+            ({ error: permsError } = await supabase
+              .from("staff_permissions")
+              .insert({
+                staff_profile_id: profile.id,
+                can_add_product: newStaffPermissions.addProduct,
+                can_delete_product: newStaffPermissions.deleteProduct,
+                can_edit_product: newStaffPermissions.editProduct,
+                can_grant_admin: false,
+              }));
+          }
           if (permsError) throw permsError;
         }
 
@@ -364,6 +437,111 @@ export function TeamManagementPage() {
     setGrantAdminAccess(false);
   };
 
+  const handleAskDeleteUser = (target: User) => {
+    if (target.id === currentUser?.id) {
+      toast.error("You cannot delete your own account.");
+      return;
+    }
+    setDeleteTargetUser(target);
+    setDeletePassword("");
+    setDeletePasswordError("");
+    setShowDeleteUserModal(true);
+  };
+
+  const handleConfirmDeleteUser = () => {
+    const run = async () => {
+      if (!deleteTargetUser || !isSupabaseConfigured()) return;
+      if (!deletePassword) {
+        setDeletePasswordError("Please enter your admin password.");
+        return;
+      }
+
+      setIsDeletingUser(true);
+      try {
+        const valid = await verifyCurrentAdminPassword(deletePassword);
+        if (!valid) {
+          setDeletePasswordError("Incorrect admin password.");
+          return;
+        }
+
+        const supabase = getSupabase();
+        const profileId = deleteTargetUser.id;
+
+        // Delete dependent rows first.
+        const { error: deletePermError } = await supabase
+          .from("staff_permissions")
+          .delete()
+          .eq("staff_profile_id", profileId);
+        if (deletePermError) throw deletePermError;
+
+        const { error: deleteAccountError } = await supabase
+          .from("user_accounts")
+          .delete()
+          .eq("profile_id", profileId);
+        if (deleteAccountError) throw deleteAccountError;
+
+        const { error: deleteProfileError } = await supabase
+          .from("profiles")
+          .delete()
+          .eq("id", profileId);
+
+        if (deleteProfileError) {
+          // FK-safe fallback: keep historical logs immutable, deactivate account instead.
+          if (deleteProfileError.code === "23503") {
+            const softDeletedUsername = `deleted_${profileId.replace(/-/g, "").slice(0, 12)}_${Date.now()}`;
+            const { error: restoreAccountAsInactiveError } = await supabase
+              .from("user_accounts")
+              .insert({
+                profile_id: profileId,
+                password_hash: await bcrypt.hash(`disabled-${Date.now()}`, 10),
+                is_active: false,
+              });
+
+            if (restoreAccountAsInactiveError && restoreAccountAsInactiveError.code !== "23505") {
+              throw restoreAccountAsInactiveError;
+            }
+
+            const { error: deactivateError } = await supabase
+              .from("user_accounts")
+              .update({ is_active: false })
+              .eq("profile_id", profileId);
+            if (deactivateError) throw deactivateError;
+
+            const { error: anonymizeProfileError } = await supabase
+              .from("profiles")
+              .update({
+                username: softDeletedUsername,
+                full_name: "[Deleted User]",
+                email: null,
+                role: "staff",
+              })
+              .eq("id", profileId);
+            if (anonymizeProfileError) throw anonymizeProfileError;
+
+            toast.success("User removed (historical logs preserved).");
+          } else {
+            throw deleteProfileError;
+          }
+        } else {
+          toast.success("User deleted successfully.");
+        }
+
+        await loadUsers();
+        setShowDeleteUserModal(false);
+        setDeleteTargetUser(null);
+        setDeletePassword("");
+        setDeletePasswordError("");
+      } catch (err) {
+        console.error("Failed to delete user:", err);
+        toast.error("Failed to remove user from Supabase.");
+      } finally {
+        setIsDeletingUser(false);
+      }
+    };
+
+    void run();
+  };
+
   const editingUser = users.find((u) => u.id === editingUserId);
 
   return (
@@ -379,7 +557,7 @@ export function TeamManagementPage() {
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#8B2E2E] text-white text-sm font-semibold hover:bg-[#B23A3A] transition-colors"
           >
             <UserPlus className="w-4 h-4" />
-            + Add User
+            Add User
           </button>
         )}
       </div>
@@ -412,16 +590,26 @@ export function TeamManagementPage() {
                     </span>
                   </td>
                   <td className="py-3 px-4 text-right">
-                    <button
-                      onClick={() => handleEditPermissions(user.id)}
-                      className={`px-4 py-1.5 text-xs rounded border transition-colors ${
-                        isEditing
-                          ? "border-red-600 text-red-600 bg-red-50"
-                          : "border-gray-300 text-gray-700 hover:bg-gray-50"
-                      }`}
-                    >
-                      Permissions
-                    </button>
+                    <div className="inline-flex gap-2">
+                      <button
+                        onClick={() => handleEditPermissions(user.id)}
+                        className={`px-4 py-1.5 text-xs rounded border transition-colors ${
+                          isEditing
+                            ? "border-red-600 text-red-600 bg-red-50"
+                            : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                        }`}
+                      >
+                        Permissions
+                      </button>
+                      {canManageUsers && !isCurrentUser && (
+                        <button
+                          onClick={() => handleAskDeleteUser(user)}
+                          className="px-4 py-1.5 text-xs rounded border border-red-300 text-red-600 hover:bg-red-50 transition-colors"
+                        >
+                          Delete User
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
@@ -450,6 +638,12 @@ export function TeamManagementPage() {
                 label="Edit Product"
                 checked={!!editedPermissions?.editProduct}
                 onChange={() => handlePermissionChange("editProduct")}
+                disabled={grantAdminAccess}
+              />
+              <PermissionCheckbox
+                label="Archive Product"
+                checked={!!editedPermissions?.archiveProduct}
+                onChange={() => handlePermissionChange("archiveProduct")}
                 disabled={grantAdminAccess}
               />
               <PermissionCheckbox
@@ -502,14 +696,17 @@ export function TeamManagementPage() {
               />
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">Role</label>
-                <select
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#8B2E2E]/20"
-                  value={newUserForm.role}
-                  onChange={(e) => setNewUserForm((p) => ({ ...p, role: e.target.value as "Admin" | "Staff" }))}
-                >
-                  <option value="Staff">Staff</option>
-                  <option value="Admin">Admin</option>
-                </select>
+                <div className="relative">
+                  <select
+                    className="w-full h-10 rounded-lg border border-gray-300 px-3 pr-9 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#8B2E2E]/20 appearance-none"
+                    value={newUserForm.role}
+                    onChange={(e) => setNewUserForm((p) => ({ ...p, role: e.target.value as "Admin" | "Staff" }))}
+                  >
+                    <option value="Staff">Staff</option>
+                    <option value="Admin">Admin</option>
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                </div>
               </div>
               <Field
                 label="Temporary Password"
@@ -548,6 +745,16 @@ export function TeamManagementPage() {
                     checked={newStaffPermissions.editProduct}
                     onChange={() =>
                       setNewStaffPermissions((prev) => ({ ...prev, editProduct: !prev.editProduct }))
+                    }
+                  />
+                  <PermissionCheckbox
+                    label="Archive Product"
+                    checked={newStaffPermissions.archiveProduct}
+                    onChange={() =>
+                      setNewStaffPermissions((prev) => ({
+                        ...prev,
+                        archiveProduct: !prev.archiveProduct,
+                      }))
                     }
                   />
                 </div>
@@ -617,6 +824,55 @@ export function TeamManagementPage() {
                 disabled={isSaving}
               >
                 {isSaving ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteUserModal && deleteTargetUser && (
+        <div className="fixed inset-0 bg-black/10 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 shadow-xl border border-gray-200">
+            <h3 className="text-lg font-bold text-red-700 mb-2">Delete User</h3>
+            <p className="text-sm text-gray-600 mb-3">
+              You are deleting <strong>{deleteTargetUser.name}</strong> ({deleteTargetUser.username}).
+            </p>
+            <p className="text-sm text-gray-600 mb-4">
+              Enter your admin password to confirm removal.
+            </p>
+            <input
+              type="password"
+              value={deletePassword}
+              onChange={(e) => {
+                setDeletePassword(e.target.value);
+                setDeletePasswordError("");
+              }}
+              className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-red-500"
+              placeholder="Admin password"
+            />
+            {deletePasswordError && (
+              <p className="text-red-600 text-xs mt-2">{deletePasswordError}</p>
+            )}
+
+            <div className="flex gap-3 mt-5">
+              <button
+                onClick={() => {
+                  setShowDeleteUserModal(false);
+                  setDeleteTargetUser(null);
+                  setDeletePassword("");
+                  setDeletePasswordError("");
+                }}
+                className="flex-1 px-4 py-2 bg-gray-800 text-white rounded text-sm hover:bg-gray-900"
+                disabled={isDeletingUser}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDeleteUser}
+                className="flex-1 px-4 py-2 bg-red-700 text-white rounded text-sm hover:bg-red-800 disabled:opacity-50"
+                disabled={isDeletingUser}
+              >
+                {isDeletingUser ? "Deleting..." : "Confirm Delete"}
               </button>
             </div>
           </div>

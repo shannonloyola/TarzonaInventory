@@ -7,6 +7,7 @@ import { ActivityLogPage } from "./pages/activity-log";
 import { SettingsLayout } from "./pages/settings/layout";
 import { HashGenerator } from "./pages/hash-generator";
 import { LoginDiagnostic } from "./pages/login-diagnostic";
+import { ResetPasswordPage } from "./pages/reset-password";
 
 // Protected Route Wrapper
 function ProtectedRoute({
@@ -38,6 +39,10 @@ export const router = createBrowserRouter([
   {
     path: "/login-diagnostic",
     element: <LoginDiagnostic />,
+  },
+  {
+    path: "/reset-password",
+    element: <ResetPasswordPage />,
   },
   {
     path: "/dashboard",

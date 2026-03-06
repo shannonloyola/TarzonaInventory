@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { useAuth } from "../context/auth-context";
 import { Role } from "../types";
 import { toast } from "sonner";
-import { Settings } from "lucide-react";
+import { Settings, ChevronDown } from "lucide-react";
 import { AdminDevSetupModal } from "../components/admin-dev-setup-modal";
 import logoImg from "../../assets/23cc4f10c8c227246e4dd99a2116314104e701d4.png";
 
@@ -32,12 +32,11 @@ export function LoginPage() {
       }
     } catch (error: any) {
       const rawMessage = String(error?.message || "");
-      const isRoleMismatch =
-        rawMessage.includes("This account is Admin") ||
-        rawMessage.includes("This account is Staff");
+      const isRoleMismatch = rawMessage.startsWith("ROLE_MISMATCH:");
 
       if (isRoleMismatch) {
-        toast.error("Login Error: Role Mismatch");
+        const actualRole = rawMessage.split(":")[1] === "admin" ? "Admin" : "Staff";
+        toast.error(`Login Error: Role Mismatch.`);
       } else {
         toast.error(error.message || "Login failed");
       }
@@ -95,16 +94,19 @@ export function LoginPage() {
               >
                 <div>
                   <label className={labelClass}>Role</label>
-                  <select
-                    value={role}
-                    onChange={(e) =>
-                      setRole(e.target.value as Role)
-                    }
-                    className={inputClass}
-                  >
-                    <option value="Admin">Admin</option>
-                    <option value="Staff">Staff</option>
-                  </select>
+                  <div className="relative">
+                    <select
+                      value={role}
+                      onChange={(e) =>
+                        setRole(e.target.value as Role)
+                      }
+                      className={`${inputClass} h-10 pr-9 appearance-none`}
+                    >
+                      <option value="Admin">Admin</option>
+                      <option value="Staff">Staff</option>
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                  </div>
                 </div>
 
                 <div>
@@ -147,7 +149,9 @@ export function LoginPage() {
 
                 <button
                   type="button"
-                  onClick={() => setShowForgotPassword(true)}
+                  onClick={() => {
+                    setShowForgotPassword(true);
+                  }}
                   className="block text-[11px] text-[#7A2D2D] underline underline-offset-2"
                 >
                   Forgot Password?
@@ -160,37 +164,30 @@ export function LoginPage() {
 
       {/* Forgot Password Modal */}
       {showForgotPassword && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-white/15 backdrop-blur-[2px] flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4">
             <h3 className="text-xl font-bold text-gray-900 mb-4">
-              Reset Password
+              Forgot Password
             </h3>
             <p className="text-gray-600 mb-6">
-              Enter your email address and we'll send you a
-              reset link.
+              Password reset email is not configured yet. Please contact the admin.
             </p>
-            <input
-              type="email"
-              placeholder="Enter your email"
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#7A2D2D]/20 mb-6"
-            />
             <div className="flex gap-3">
               <button
                 onClick={() => setShowForgotPassword(false)}
                 className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
               >
-                Cancel
+                Close
               </button>
               <button
                 onClick={() => {
-                  toast.success(
-                    "Reset link sent to your email",
-                  );
+                  setRole("Admin");
                   setShowForgotPassword(false);
+                  toast.info("Role switched to Admin.");
                 }}
                 className="flex-1 px-4 py-2 bg-[#7A2D2D] text-white rounded-lg hover:bg-[#5B1F1F]"
               >
-                Send Reset Link
+                Login as Admin
               </button>
             </div>
           </div>

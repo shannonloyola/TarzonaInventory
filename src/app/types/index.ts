@@ -15,6 +15,7 @@ export interface StaffPermissions {
   addProduct: boolean;
   editProduct: boolean;
   deleteProduct: boolean;
+  archiveProduct: boolean;
   addItem: boolean;
   deleteItem: boolean;
 }
@@ -47,6 +48,7 @@ export interface InventorySheet {
 export interface ActivityLog {
   id: string;
   timestamp: string;
+  userId?: string;
   userName: string;
   userEmail: string;
   userRole: Role;
@@ -61,6 +63,7 @@ export interface AuthContextType {
   logout: () => void;
   isAdmin: boolean;
   hasPermission: (permission: keyof StaffPermissions) => boolean;
+  updateUserLocal: (updates: Partial<Pick<User, "name" | "email" | "username">>) => void;
 }
 
 export interface InventoryContextType {
@@ -70,13 +73,19 @@ export interface InventoryContextType {
   activityLogs: ActivityLog[];
   getInventoryForDate: (date: string) => DailyInventory[];
   getProductById: (id: string) => Product | undefined;
-  addProduct: (product: Omit<Product, "id">) => void;
+  addProduct: (product: NewProductInput) => Promise<boolean>;
   updateProduct: (id: string, updates: Partial<Product>) => void;
   deleteProduct: (id: string) => void;
   updateDailyInventory: (date: string, productId: string, updates: Partial<DailyInventory>) => void;
   archiveProduct: (id: string) => void;
   archiveAllProducts: () => void;
-  exportData: () => void;
+  deleteAllProducts: () => Promise<boolean>;
+  exportData: (targetDates?: string[]) => void;
   setSelectedDate: (date: string) => void;
   logActivity: (activity: string, productId?: string, productName?: string) => void;
+}
+
+export interface NewProductInput extends Omit<Product, "id"> {
+  beginningStock: number;
+  imageFile?: File | null;
 }

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Search, Plus, Download, Archive, ChevronDown, ImageIcon, Minus, Pencil, X, Filter } from "lucide-react";
 import { useInventory } from "../context/inventory-context";
 import { useAuth } from "../context/auth-context";
-import { Product, DailyInventory } from "../types";
+import { Product, DailyInventory, NewProductInput } from "../types";
 import { LowStockAlert } from "../components/low-stock-alert";
 import { motion, AnimatePresence } from "motion/react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "../components/ui/dialog";
@@ -18,9 +18,160 @@ import { toast } from "sonner";
 const Edit = Pencil;
 
 type DrawerState = null | "item-view" | "edit-mode";
+type SelectionMode = "none" | "delete" | "archive";
+
+function parseUiDate(value: string): Date | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const parsed = parse(trimmed, "yyyy-MM-dd", new Date());
+    return isValid(parsed) ? parsed : null;
+  }
+
+  if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(trimmed)) {
+    const parsed = parse(trimmed, "M-d-yyyy", new Date());
+    return isValid(parsed) ? parsed : null;
+  }
+
+  if (/^\d{1,2}-\d{1,2}-\d{2}$/.test(trimmed)) {
+    const parsed = parse(trimmed, "M-d-yy", new Date());
+    return isValid(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function normalizeOptionValue(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function isOtherOption(value: string): boolean {
+  const key = normalizeOptionValue(value);
+  return key === "other" || key === "others";
+}
+
+function buildUniqueOptions(values: string[], keepOtherLast = false): string[] {
+  const unique = new Map<string, string>();
+  values.forEach((value) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const key = normalizeOptionValue(trimmed);
+    if (!unique.has(key)) {
+      unique.set(key, trimmed);
+    }
+  });
+  return Array.from(unique.values()).sort((a, b) => {
+    if (keepOtherLast) {
+      const aIsOther = isOtherOption(a);
+      const bIsOther = isOtherOption(b);
+      if (aIsOther && !bIsOther) return 1;
+      if (!aIsOther && bIsOther) return -1;
+    }
+    return a.localeCompare(b);
+  });
+}
+
+function formatOptionDisplay(value: string): string {
+  const trimmed = value.trim().replace(/\s+/g, " ");
+  if (!trimmed) return "";
+
+  // If source value is all uppercase letters (plus spaces/punctuation), show title case.
+  const looksAllCaps = /[A-Z]/.test(trimmed) && trimmed === trimmed.toUpperCase();
+  if (!looksAllCaps) return trimmed;
+
+  return trimmed
+    .split(" ")
+    .map((part) =>
+      part.length === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
+    )
+    .join(" ");
+}
+
+const NON_DEFAULT_CATEGORY_STYLES = [
+  "bg-emerald-50 text-emerald-700 border border-emerald-200",
+  "bg-violet-50 text-violet-700 border border-violet-200",
+  "bg-cyan-50 text-cyan-700 border border-cyan-200",
+  "bg-orange-50 text-orange-700 border border-orange-200",
+  "bg-lime-50 text-lime-700 border border-lime-200",
+  "bg-fuchsia-50 text-fuchsia-700 border border-fuchsia-200",
+] as const;
+
+function hashCategoryKey(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+function getCategoryBadgeClass(category: string): string {
+  const key = normalizeOptionValue(category);
+  if (key === "beer") return "bg-amber-50 text-amber-700 border border-amber-200";
+  if (key === "wine") return "bg-rose-50 text-rose-700 border border-rose-200";
+  if (
+    key === "spirits" ||
+    key === "rum" ||
+    key === "whiskey" ||
+    key === "whisky" ||
+    key === "vodka" ||
+    key === "gin" ||
+    key === "tequila" ||
+    key === "brandy"
+  ) {
+    return "bg-sky-50 text-sky-700 border border-sky-200";
+  }
+  if (key === "others") return "bg-slate-100 text-slate-700 border border-slate-300";
+  return NON_DEFAULT_CATEGORY_STYLES[
+    hashCategoryKey(key) % NON_DEFAULT_CATEGORY_STYLES.length
+  ];
+}
+
+const SIZE_UNIT_OPTIONS = ["CL", "L", "mL", "Other"] as const;
+type SizeUnitOption = (typeof SIZE_UNIT_OPTIONS)[number];
+
+function parseSizeInput(rawSize: string): { value: string; unit: SizeUnitOption; other: string } {
+  const compact = rawSize.trim().replace(/\s+/g, "");
+  const normalized = compact.toLowerCase();
+  const matched = normalized.match(
+    /^(\d+(?:\.\d+)?)(ml|milliliter|milliliters|millilitre|millilitres|cl|centiliter|centiliters|centilitre|centilitres|l|lt|ltr|liter|liters|litre|litres)$/
+  );
+  if (!matched) {
+    return { value: "", unit: "Other", other: rawSize.trim() };
+  }
+
+  const unitRaw = matched[2];
+  let unit: SizeUnitOption = "L";
+  if (
+    unitRaw === "ml" ||
+    unitRaw === "milliliter" ||
+    unitRaw === "milliliters" ||
+    unitRaw === "millilitre" ||
+    unitRaw === "millilitres"
+  ) {
+    unit = "mL";
+  } else if (
+    unitRaw === "cl" ||
+    unitRaw === "centiliter" ||
+    unitRaw === "centiliters" ||
+    unitRaw === "centilitre" ||
+    unitRaw === "centilitres"
+  ) {
+    unit = "CL";
+  }
+
+  return { value: matched[1], unit, other: "" };
+}
+
+function composeSizeInput(value: string, unit: SizeUnitOption, other: string): string {
+  if (unit === "Other") return other.trim();
+  const normalizedNumber = value.trim();
+  if (!normalizedNumber) return "";
+  return `${normalizedNumber}${unit}`;
+}
 
 export function InventoryPage() {
-  const { products, getInventoryForDate, selectedDate, updateDailyInventory, updateProduct, addProduct } = useInventory();
+  const { products, getInventoryForDate, selectedDate, updateDailyInventory, updateProduct, addProduct, deleteProduct } = useInventory();
   const { hasPermission } = useAuth();
   
   const [searchQuery, setSearchQuery] = useState("");
@@ -41,18 +192,20 @@ export function InventoryPage() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
 
   // Delete mode state
-  const [deleteMode, setDeleteMode] = useState(false);
-  const [selectedForDelete, setSelectedForDelete] = useState<Set<string>>(new Set());
+  const [selectionMode, setSelectionMode] = useState<SelectionMode>("none");
+  const [selectedForAction, setSelectedForAction] = useState<Set<string>>(new Set());
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [isArchiveConfirmOpen, setIsArchiveConfirmOpen] = useState(false);
 
   const activeProducts = products.filter((p) => !p.archived);
   const inventory = getInventoryForDate(selectedDate);
 
   const getPreviousDayEndStock = (productId: string): number => {
-    const parsedSelectedDate = parse(selectedDate, "M-d-yy", new Date());
-    if (!isValid(parsedSelectedDate)) return 0;
+    const parsedSelectedDate = parseUiDate(selectedDate);
+    if (!parsedSelectedDate) return 0;
 
     const previousDate = subDays(parsedSelectedDate, 1);
-    const previousDateStr = format(previousDate, "M-d-yy");
+    const previousDateStr = format(previousDate, "M-d-yyyy");
     const previousInventory = getInventoryForDate(previousDateStr);
     const previousProductInventory = previousInventory.find((item) => item.productId === productId);
 
@@ -60,8 +213,10 @@ export function InventoryPage() {
   };
 
   // Get unique categories and brands
-  const categories = Array.from(new Set(activeProducts.map((p) => p.category)));
-  const brands = Array.from(new Set(activeProducts.map((p) => p.brand).filter(Boolean) as string[]));
+  const categories = buildUniqueOptions(activeProducts.map((p) => p.category), true);
+  const brands = buildUniqueOptions(
+    (activeProducts.map((p) => p.brand).filter(Boolean) as string[]).map(formatOptionDisplay)
+  );
 
   // Filter products
   const filteredProducts = activeProducts.filter((product) => {
@@ -69,8 +224,11 @@ export function InventoryPage() {
       product.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       product.size.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory =
-      categoryFilter === "Category:" || product.category === categoryFilter;
-    const matchesBrand = brandFilter === "Brand:" || product.brand === brandFilter;
+      categoryFilter === "Category:" ||
+      normalizeOptionValue(product.category) === normalizeOptionValue(categoryFilter);
+    const matchesBrand =
+      brandFilter === "Brand:" ||
+      normalizeOptionValue(product.brand || "") === normalizeOptionValue(brandFilter);
 
     return matchesSearch && matchesCategory && matchesBrand;
   });
@@ -137,26 +295,60 @@ export function InventoryPage() {
   }
 
   const handleToggleDeleteMode = () => {
-    setDeleteMode(!deleteMode);
-    setSelectedForDelete(new Set());
+    setSelectionMode((prev) => (prev === "delete" ? "none" : "delete"));
+    setSelectedForAction(new Set());
+  };
+
+  const handleToggleArchiveMode = () => {
+    setSelectionMode((prev) => (prev === "archive" ? "none" : "archive"));
+    setSelectedForAction(new Set());
   };
 
   const handleToggleSelect = (productId: string) => {
-    const newSet = new Set(selectedForDelete);
+    const newSet = new Set(selectedForAction);
     if (newSet.has(productId)) {
       newSet.delete(productId);
     } else {
       newSet.add(productId);
     }
-    setSelectedForDelete(newSet);
+    setSelectedForAction(newSet);
   };
 
   const handleDeleteSelected = () => {
-    if (selectedForDelete.size === 0) return;
-    // Here you would implement the actual delete logic through your context
-    // For now, we'll just clear the selection and exit delete mode
-    setSelectedForDelete(new Set());
-    setDeleteMode(false);
+    if (selectedForAction.size === 0) return;
+    setIsDeleteConfirmOpen(true);
+  };
+
+  const handleConfirmDeleteSelected = () => {
+    const idsToDelete = Array.from(selectedForAction);
+    if (idsToDelete.length === 0) return;
+
+    idsToDelete.forEach((id) => {
+      deleteProduct(id);
+    });
+
+    setIsDeleteConfirmOpen(false);
+    setSelectedForAction(new Set());
+    setSelectionMode("none");
+  };
+
+  const handleArchiveSelected = () => {
+    if (selectedForAction.size === 0) return;
+    setIsArchiveConfirmOpen(true);
+  };
+
+  const handleConfirmArchiveSelected = () => {
+    const idsToArchive = Array.from(selectedForAction);
+    if (idsToArchive.length === 0) return;
+
+    idsToArchive.forEach((id) => {
+      updateProduct(id, { archived: true });
+    });
+
+    toast.success(`${idsToArchive.length} product${idsToArchive.length > 1 ? "s" : ""} archived`);
+    setIsArchiveConfirmOpen(false);
+    setSelectedForAction(new Set());
+    setSelectionMode("none");
   };
 
   const totalItems = inventory.reduce((sum, item) => sum + item.end, 0);
@@ -180,11 +372,11 @@ export function InventoryPage() {
     .filter(item => item.product); // Remove items where product wasn't found
 
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-50">
+    <div className="flex min-h-screen bg-gray-50">
       {/* Main Content - shifts left when drawer is open */}
       <div 
-        className={`flex-1 ml-16 py-8 pl-8 overflow-y-auto transition-all duration-300 ease-out ${
-          drawerState ? "mr-80 pr-0" : "mr-0 pr-8"
+        className={`flex-1 min-w-0 ml-16 py-4 sm:py-6 lg:py-8 pl-4 sm:pl-6 lg:pl-8 pr-4 sm:pr-6 lg:pr-8 overflow-y-auto transition-all duration-300 ease-out ${
+          drawerState ? "xl:mr-80" : "mr-0"
         }`}
       >
         {/* Header */}
@@ -197,7 +389,7 @@ export function InventoryPage() {
         <LowStockAlert lowStockItems={lowStockItems} />
 
         {/* Filters Row */}
-        <div className="flex items-center gap-4 mb-6">
+        <div className="flex flex-wrap items-center gap-3 sm:gap-4 mb-6">
           {hasPermission("addProduct") && (
             <button 
               onClick={() => setIsAddModalOpen(true)}
@@ -209,7 +401,7 @@ export function InventoryPage() {
 
           {hasPermission("deleteProduct") && (
             <>
-              {!deleteMode ? (
+              {selectionMode !== "delete" ? (
                 <button 
                   onClick={handleToggleDeleteMode}
                   className="flex items-center gap-1.5 text-sm font-semibold text-[#8B2E2E] hover:text-[#B23A3A] transition-colors px-0"
@@ -220,10 +412,10 @@ export function InventoryPage() {
                 <div className="flex items-center gap-3">
                   <button 
                     onClick={handleDeleteSelected}
-                    disabled={selectedForDelete.size === 0}
+                    disabled={selectedForAction.size === 0}
                     className="px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Delete Selected ({selectedForDelete.size})
+                    Delete Selected ({selectedForAction.size})
                   </button>
                   <button 
                     onClick={handleToggleDeleteMode}
@@ -236,7 +428,36 @@ export function InventoryPage() {
             </>
           )}
 
-          <div className="flex items-center gap-3 ml-auto">
+          {hasPermission("archiveProduct") && (
+            <>
+              {selectionMode !== "archive" ? (
+                <button
+                  onClick={handleToggleArchiveMode}
+                  className="flex items-center gap-1.5 text-sm font-semibold text-[#8B2E2E] hover:text-[#B23A3A] transition-colors px-0"
+                >
+                  Archive
+                </button>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={handleArchiveSelected}
+                    disabled={selectedForAction.size === 0}
+                    className="px-4 py-2 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Archive Selected ({selectedForAction.size})
+                  </button>
+                  <button
+                    onClick={handleToggleArchiveMode}
+                    className="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3 ml-0 sm:ml-auto">
             <button
               onClick={() => setShowMovementOnly((prev) => !prev)}
               className={`flex items-center gap-2 px-3 py-2 border rounded-xl text-xs font-semibold transition-all duration-200 ${
@@ -359,19 +580,19 @@ export function InventoryPage() {
         </div>
 
         {/* Table Card */}
-        <div className="bg-white border border-gray-200 rounded-[16px] shadow-sm overflow-hidden">
-          <table className="w-full table-fixed">
+        <div className="bg-white border border-gray-200 rounded-[16px] shadow-sm overflow-x-auto">
+          <table className="w-full min-w-[1080px] table-fixed">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                {deleteMode && (
+                {selectionMode !== "none" && (
                   <th className="w-[5%] text-left py-3 px-4 text-xs font-bold text-gray-600 uppercase tracking-wide">
                     Select
                   </th>
                 )}
-                <th className={`${deleteMode ? 'w-[10%]' : 'w-[12%]'} text-left py-3 px-4 text-xs font-bold text-gray-600 uppercase tracking-wide`}>
+                <th className={`${selectionMode !== "none" ? 'w-[10%]' : 'w-[12%]'} text-left py-3 px-4 text-xs font-bold text-gray-600 uppercase tracking-wide`}>
                   Image
                 </th>
-                <th className={`${deleteMode ? 'w-[20%]' : 'w-[23%]'} text-left py-3 px-4 text-xs font-bold text-gray-600 uppercase tracking-wide`}>
+                <th className={`${selectionMode !== "none" ? 'w-[20%]' : 'w-[23%]'} text-left py-3 px-4 text-xs font-bold text-gray-600 uppercase tracking-wide`}>
                   Name
                 </th>
                 <th className="w-[10%] text-left py-3 px-4 text-xs font-bold text-gray-600 uppercase tracking-wide">
@@ -381,7 +602,10 @@ export function InventoryPage() {
                   Category
                 </th>
                 <th className="w-[10%] text-left py-3 px-4 text-xs font-bold text-gray-600 uppercase tracking-wide">
-                  Cost /bottle
+                  <span>Cost </span>
+                  <span className="normal-case text-[10px] italic font-medium tracking-normal text-gray-500">
+                    /bottle
+                  </span>
                 </th>
                 <th className="w-[8%] text-left py-3 px-4 text-xs font-bold text-gray-600 uppercase tracking-wide">
                   Beg.
@@ -401,17 +625,23 @@ export function InventoryPage() {
               {displayedProducts.map((product) => {
                 const inv = inventory.find((i) => i.productId === product.id);
                 const isSelected = selectedProduct?.id === product.id;
-                const isSelectedForDelete = selectedForDelete.has(product.id);
-                
+                const isSelectedForAction = selectedForAction.has(product.id);
+                 
                 return (
                   <TableRow
                     key={product.id}
                     product={product}
                     inventory={inv}
                     isSelected={isSelected}
-                    onClick={() => !deleteMode && handleRowClick(product)}
-                    deleteMode={deleteMode}
-                    isSelectedForDelete={isSelectedForDelete}
+                    onClick={() => {
+                      if (selectionMode === "none") {
+                        handleRowClick(product);
+                      } else {
+                        handleToggleSelect(product.id);
+                      }
+                    }}
+                    selectionMode={selectionMode}
+                    isSelectedForAction={isSelectedForAction}
                     onToggleSelect={() => handleToggleSelect(product.id)}
                   />
                 );
@@ -419,8 +649,8 @@ export function InventoryPage() {
               {displayedProducts.length === 0 && (
                 <tr>
                   <td
-                    colSpan={deleteMode ? 11 : 10}
-                    className="py-8 text-center text-sm text-gray-500"
+                      colSpan={selectionMode !== "none" ? 11 : 10}
+                      className="py-8 text-center text-sm text-gray-500"
                   >
                     {showMovementOnly
                       ? "No products with movement for this date."
@@ -453,7 +683,7 @@ export function InventoryPage() {
               animate={{ x: 0 }}
               exit={{ x: "100%" }}
               transition={{ type: "tween", duration: 0.3, ease: "easeOut" }}
-              className="fixed right-0 top-0 bottom-0 w-80 bg-[#2d2d2d] text-white flex-shrink-0 flex flex-col shadow-2xl z-50"
+              className="fixed right-0 top-0 bottom-0 w-full sm:w-80 bg-[#2d2d2d] text-white flex-shrink-0 flex flex-col shadow-2xl z-50"
             >
               <RightDrawerContent
                 state={drawerState}
@@ -479,7 +709,71 @@ export function InventoryPage() {
         isOpen={isAddModalOpen} 
         onClose={() => setIsAddModalOpen(false)} 
         onAdd={addProduct}
+        brandSuggestions={brands}
+        categorySuggestions={categories}
       />
+
+      <Dialog open={isDeleteConfirmOpen} onOpenChange={setIsDeleteConfirmOpen}>
+        <DialogContent className="sm:max-w-[460px] rounded-[16px]">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold text-red-600">
+              Are you sure?
+            </DialogTitle>
+            <DialogDescription className="text-sm text-gray-600">
+              You are about to delete {selectedForAction.size} selected product
+              {selectedForAction.size > 1 ? "s" : ""}. You can't revert this process.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-xl"
+              onClick={() => setIsDeleteConfirmOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="rounded-xl bg-red-600 hover:bg-red-700"
+              onClick={handleConfirmDeleteSelected}
+            >
+              Yes, Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isArchiveConfirmOpen} onOpenChange={setIsArchiveConfirmOpen}>
+        <DialogContent className="sm:max-w-[460px] rounded-[16px]">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold text-amber-600">
+              Archive selected products?
+            </DialogTitle>
+            <DialogDescription className="text-sm text-gray-600">
+              You are about to archive {selectedForAction.size} selected product
+              {selectedForAction.size > 1 ? "s" : ""}. You can restore them later in Settings &gt; Data Controls.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-xl"
+              onClick={() => setIsArchiveConfirmOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="rounded-xl bg-amber-600 hover:bg-amber-700"
+              onClick={handleConfirmArchiveSelected}
+            >
+              Yes, Archive
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -489,12 +783,12 @@ interface TableRowProps {
   inventory: DailyInventory | undefined;
   isSelected: boolean;
   onClick: () => void;
-  deleteMode: boolean;
-  isSelectedForDelete: boolean;
+  selectionMode: SelectionMode;
+  isSelectedForAction: boolean;
   onToggleSelect: () => void;
 }
 
-function TableRow({ product, inventory, isSelected, onClick, deleteMode, isSelectedForDelete, onToggleSelect }: TableRowProps) {
+function TableRow({ product, inventory, isSelected, onClick, selectionMode, isSelectedForAction, onToggleSelect }: TableRowProps) {
   const [displayEnd, setDisplayEnd] = useState(inventory?.end || 0);
 
   // Animate End value changes
@@ -531,13 +825,13 @@ function TableRow({ product, inventory, isSelected, onClick, deleteMode, isSelec
       }`}
       style={{ height: "72px" }}
     >
-      {deleteMode && (
+      {selectionMode !== "none" && (
         <td className="py-4 px-4">
           <input
             type="checkbox"
             className="w-4 h-4 rounded border-gray-300 text-[#8B2E2E] focus:ring-[#8B2E2E] cursor-pointer transition-all duration-200"
             onClick={(e) => e.stopPropagation()}
-            checked={isSelectedForDelete}
+            checked={isSelectedForAction}
             onChange={onToggleSelect}
           />
         </td>
@@ -561,13 +855,7 @@ function TableRow({ product, inventory, isSelected, onClick, deleteMode, isSelec
       <td className="py-4 px-4 text-sm text-gray-600">{product.size}</td>
       <td className="py-4 px-4">
         <span
-          className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${
-            product.category === "Beer"
-              ? "bg-yellow-50 text-yellow-700"
-              : product.category === "Wine"
-              ? "bg-rose-50 text-rose-700"
-              : "bg-gray-100 text-gray-700"
-          }`}
+          className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${getCategoryBadgeClass(product.category)}`}
         >
           {product.category}
         </span>
@@ -622,20 +910,55 @@ function RightDrawerContent({
 }: RightDrawerContentProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [editSizeValue, setEditSizeValue] = useState("");
+  const [editSizeUnit, setEditSizeUnit] = useState<SizeUnitOption>("mL");
+  const [editSizeOther, setEditSizeOther] = useState("");
+
+  useEffect(() => {
+    if (state !== "edit-mode" || !editedProduct) return;
+    const parsed = parseSizeInput(editedProduct.size || "");
+    setEditSizeValue(parsed.value);
+    setEditSizeUnit(parsed.unit);
+    setEditSizeOther(parsed.other);
+  }, [state, editedProduct?.id, editedProduct?.size]);
 
   const handleInventoryChange = (field: "in" | "out", delta: number) => {
     if (!editedInventory) return;
     
     const updated = { ...editedInventory };
     const currentValue = updated[field] as number;
-    const newValue = Math.max(0, currentValue + delta);
+    const maxValue = field === "out" ? updated.total : Number.POSITIVE_INFINITY;
+    const newValue = Math.max(0, Math.min(maxValue, currentValue + delta));
     
     updated[field] = newValue as never;
     
     // Auto-calculate
+    updated.in = Math.max(0, updated.in);
     updated.total = updated.beg + updated.in;
+    updated.out = Math.max(0, Math.min(updated.out, updated.total));
     updated.end = updated.total - updated.out;
     
+    onInventoryChange(updated);
+  };
+
+  const handleInventoryInputChange = (field: "in" | "out", rawValue: string) => {
+    if (!editedInventory) return;
+
+    const digitsOnly = rawValue.replace(/\D/g, "");
+    const parsedValue = digitsOnly ? parseInt(digitsOnly, 10) : 0;
+
+    const updated = { ...editedInventory };
+    if (field === "in") {
+      updated.in = Math.max(0, parsedValue);
+      updated.total = updated.beg + updated.in;
+      updated.out = Math.max(0, Math.min(updated.out, updated.total));
+      updated.end = updated.total - updated.out;
+    } else {
+      updated.out = Math.max(0, Math.min(parsedValue, updated.total));
+      updated.total = updated.beg + updated.in;
+      updated.end = updated.total - updated.out;
+    }
+
     onInventoryChange(updated);
   };
 
@@ -707,6 +1030,14 @@ function RightDrawerContent({
     } finally {
       setIsUploadingImage(false);
     }
+  };
+
+  const updateEditedSize = (nextValue: string, nextUnit: SizeUnitOption, nextOther: string) => {
+    if (!editedProduct) return;
+    onProductChange({
+      ...editedProduct,
+      size: composeSizeInput(nextValue, nextUnit, nextOther),
+    });
   };
 
   if (state === "item-view" && product) {
@@ -830,8 +1161,44 @@ function RightDrawerContent({
             />
             <EditField
               label="Size"
-              value={editedProduct.size}
-              onChange={(val) => onProductChange({ ...editedProduct, size: val })}
+              value={
+                editSizeUnit === "Other"
+                  ? editSizeOther
+                  : editSizeValue
+              }
+              onChange={(val) => {
+                if (editSizeUnit === "Other") {
+                  setEditSizeOther(val);
+                  updateEditedSize(editSizeValue, editSizeUnit, val);
+                  return;
+                }
+                setEditSizeValue(val);
+                updateEditedSize(val, editSizeUnit, editSizeOther);
+              }}
+              type={editSizeUnit === "Other" ? "text" : "number"}
+              min={editSizeUnit === "Other" ? undefined : 0}
+              step={editSizeUnit === "Other" ? undefined : "0.01"}
+              rightSlot={
+                <Select
+                  value={editSizeUnit}
+                  onValueChange={(value) => {
+                    const nextUnit = value as SizeUnitOption;
+                    setEditSizeUnit(nextUnit);
+                    updateEditedSize(editSizeValue, nextUnit, editSizeOther);
+                  }}
+                >
+                  <SelectTrigger className="h-10 w-[110px] border-gray-700 bg-[#B23A3A]/5 text-white">
+                    <SelectValue placeholder="Unit" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SIZE_UNIT_OPTIONS.map((unit) => (
+                      <SelectItem key={unit} value={unit}>
+                        {unit}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              }
             />
             <EditField
               label="Category"
@@ -861,6 +1228,7 @@ function RightDrawerContent({
                 value={editedInventory.in}
                 onDecrease={() => handleInventoryChange("in", -1)}
                 onIncrease={() => handleInventoryChange("in", 1)}
+                onInputChange={(val) => handleInventoryInputChange("in", val)}
                 disabled={!hasAddItemPermission}
               />
               <div className="flex justify-between text-sm pt-4 border-t border-gray-700">
@@ -872,6 +1240,7 @@ function RightDrawerContent({
                 value={editedInventory.out}
                 onDecrease={() => handleInventoryChange("out", -1)}
                 onIncrease={() => handleInventoryChange("out", 1)}
+                onInputChange={(val) => handleInventoryInputChange("out", val)}
                 disabled={!hasDeleteItemPermission}
               />
               <div className="flex justify-between text-sm pt-4 border-t border-gray-700">
@@ -936,24 +1305,31 @@ function EditField({
   onChange, 
   type = "text",
   min,
+  step,
+  rightSlot,
 }: { 
   label: string; 
   value: string; 
   onChange: (val: string) => void; 
   type?: string;
   min?: number;
+  step?: string;
+  rightSlot?: React.ReactNode;
 }) {
   return (
     <div>
       <label className="text-xs text-gray-400 block mb-2">{label}</label>
-      <input
-        type={type}
-        step={type === "number" ? "0.01" : undefined}
-        min={type === "number" ? min : undefined}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full bg-[#B23A3A]/5 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#B23A3A]/50 focus:bg-[#B23A3A]/10 transition-colors"
-      />
+      <div className={rightSlot ? "grid grid-cols-[1fr_auto] gap-2" : ""}>
+        <input
+          type={type}
+          step={type === "number" ? step || "0.01" : undefined}
+          min={type === "number" ? min : undefined}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full bg-[#B23A3A]/5 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#B23A3A]/50 focus:bg-[#B23A3A]/10 transition-colors"
+        />
+        {rightSlot}
+      </div>
     </div>
   );
 }
@@ -963,10 +1339,11 @@ interface QuantityRowProps {
   value: number;
   onDecrease: () => void;
   onIncrease: () => void;
+  onInputChange: (value: string) => void;
   disabled?: boolean;
 }
 
-function QuantityRow({ label, value, onDecrease, onIncrease, disabled }: QuantityRowProps) {
+function QuantityRow({ label, value, onDecrease, onIncrease, onInputChange, disabled }: QuantityRowProps) {
   const isDecreaseDisabled = !!disabled || value <= 0;
   const isIncreaseDisabled = !!disabled;
 
@@ -981,7 +1358,15 @@ function QuantityRow({ label, value, onDecrease, onIncrease, disabled }: Quantit
         >
           <Minus className="w-4 h-4" />
         </button>
-        <span className="font-semibold w-10 text-center">{value}</span>
+        <input
+          type="text"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          value={value}
+          onChange={(e) => onInputChange(e.target.value)}
+          disabled={!!disabled}
+          className="w-16 h-8 text-center text-sm font-semibold text-white bg-[#B23A3A]/5 border border-gray-700 rounded-lg focus:outline-none focus:border-[#B23A3A]/50 disabled:opacity-40 disabled:cursor-not-allowed"
+        />
         <button
           onClick={onIncrease}
           disabled={isIncreaseDisabled}
@@ -1003,32 +1388,138 @@ function ReadOnlyQuantityRow({ label, value }: { label: string; value: number })
   );
 }
 
-function AddProductModal({ isOpen, onClose, onAdd }: { isOpen: boolean; onClose: () => void; onAdd: (p: any) => void }) {
+function AddProductModal({
+  isOpen,
+  onClose,
+  onAdd,
+  brandSuggestions,
+  categorySuggestions,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onAdd: (p: NewProductInput) => Promise<boolean>;
+  brandSuggestions: string[];
+  categorySuggestions: string[];
+}) {
   const [formData, setFormData] = useState({
     name: "",
     brand: "",
-    size: "",
     category: "",
     cost: "",
-    beginningStock: "0"
+    beginningStock: "0",
   });
+  const [sizeValue, setSizeValue] = useState("");
+  const [sizeUnit, setSizeUnit] = useState<SizeUnitOption>("mL");
+  const [sizeOther, setSizeOther] = useState("");
+  const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string>("");
+  const [isSaving, setIsSaving] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    onAdd({
-      name: formData.name,
-      brand: formData.brand,
-      size: formData.size,
-      category: formData.category,
-      cost: parseFloat(formData.cost) || 0,
-      archived: false
+  const resetForm = () => {
+    setFormData({
+      name: "",
+      brand: "",
+      category: "",
+      cost: "",
+      beginningStock: "0",
     });
-    onClose();
-    setFormData({ name: "", brand: "", size: "", category: "", cost: "", beginningStock: "0" });
+    setSizeValue("");
+    setSizeUnit("mL");
+    setSizeOther("");
+    setSelectedImageFile(null);
+    setImagePreviewUrl("");
+  };
+
+  const handleDialogOpenChange = (open: boolean) => {
+    if (!open) {
+      onClose();
+      resetForm();
+    }
+  };
+
+  const fileToDataUrl = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    const allowedTypes = new Set(["image/png", "image/jpeg", "image/jpg"]);
+    if (!allowedTypes.has(file.type)) {
+      toast.error("Only PNG, JPG, or JPEG files are allowed.");
+      return;
+    }
+
+    setSelectedImageFile(file);
+    try {
+      const preview = await fileToDataUrl(file);
+      setImagePreviewUrl(preview);
+    } catch {
+      setImagePreviewUrl("");
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSaving) return;
+
+    const parsedPrice = Number(formData.cost);
+    const parsedBeginningStock = Number(formData.beginningStock);
+
+    if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+      toast.error("Price must be 0 or higher.");
+      return;
+    }
+
+    if (!Number.isFinite(parsedBeginningStock) || parsedBeginningStock < 0) {
+      toast.error("Beginning stock must be 0 or higher.");
+      return;
+    }
+
+    if (!formData.category) {
+      toast.error("Category is required.");
+      return;
+    }
+
+    const composedSize = composeSizeInput(sizeValue, sizeUnit, sizeOther);
+    if (!composedSize) {
+      toast.error("Size is required.");
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const ok = await onAdd({
+        name: formData.name.trim(),
+        brand: formData.brand.trim(),
+        size: composedSize,
+        category: formData.category,
+        cost: parsedPrice,
+        beginningStock: Math.floor(parsedBeginningStock),
+        archived: false,
+        imageFile: selectedImageFile,
+        imageUrl: imagePreviewUrl || undefined,
+      });
+
+      if (!ok) return;
+
+      onClose();
+      resetForm();
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <Dialog open={isOpen} onOpenChange={handleDialogOpenChange}>
       <DialogContent className="sm:max-w-[500px] rounded-[16px]">
         <DialogHeader>
           <DialogTitle className="text-xl font-bold">Add New Product</DialogTitle>
@@ -1037,15 +1528,36 @@ function AddProductModal({ isOpen, onClose, onAdd }: { isOpen: boolean; onClose:
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="grid gap-5 py-4">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".png,.jpg,.jpeg,image/png,image/jpeg"
+            className="hidden"
+            onChange={handleImageSelect}
+          />
           <div className="grid grid-cols-4 items-center gap-4">
             <Label htmlFor="image" className="text-right text-sm font-medium">
               Image
             </Label>
             <div className="col-span-3 flex items-center gap-4">
-              <div className="w-20 h-20 bg-gray-100 rounded-xl flex items-center justify-center border-2 border-dashed border-gray-300">
-                <ImageIcon className="w-8 h-8 text-gray-400" />
+              <div className="w-20 h-20 bg-gray-100 rounded-xl flex items-center justify-center border-2 border-dashed border-gray-300 overflow-hidden">
+                {imagePreviewUrl ? (
+                  <img
+                    src={imagePreviewUrl}
+                    alt="Selected product"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <ImageIcon className="w-8 h-8 text-gray-400" />
+                )}
               </div>
-              <Button type="button" variant="outline" size="sm" className="rounded-xl">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="rounded-xl"
+                onClick={() => fileInputRef.current?.click()}
+              >
                 Upload
               </Button>
             </div>
@@ -1066,41 +1578,91 @@ function AddProductModal({ isOpen, onClose, onAdd }: { isOpen: boolean; onClose:
             <Label htmlFor="brand" className="text-right text-sm font-medium">
               Brand
             </Label>
-            <Input
-              id="brand"
-              value={formData.brand}
-              onChange={(e) => setFormData({ ...formData, brand: e.target.value })}
-              className="col-span-3 rounded-xl"
-            />
+            <div className="col-span-3">
+              <Input
+                id="brand"
+                list="brand-suggestions"
+                value={formData.brand}
+                onChange={(e) => setFormData({ ...formData, brand: e.target.value })}
+                className="rounded-xl"
+              />
+              <datalist id="brand-suggestions">
+                {brandSuggestions
+                  .filter((brand) => !!brand)
+                  .map((brand) => (
+                    <option key={brand} value={brand} />
+                  ))}
+              </datalist>
+            </div>
           </div>
           <div className="grid grid-cols-4 items-center gap-4">
             <Label htmlFor="size" className="text-right text-sm font-medium">
               Size
             </Label>
-            <Input
-              id="size"
-              value={formData.size}
-              onChange={(e) => setFormData({ ...formData, size: e.target.value })}
-              className="col-span-3 rounded-xl"
-            />
+            <div className="col-span-3 grid grid-cols-[1fr_120px] gap-2">
+              {sizeUnit === "Other" ? (
+                <Input
+                  id="size"
+                  value={sizeOther}
+                  onChange={(e) => setSizeOther(e.target.value)}
+                  className="rounded-xl"
+                  placeholder="Type size"
+                  required
+                />
+              ) : (
+                <Input
+                  id="size"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={sizeValue}
+                  onChange={(e) => setSizeValue(e.target.value)}
+                  className="rounded-xl"
+                  placeholder="e.g. 500"
+                  required
+                />
+              )}
+              <Select
+                value={sizeUnit}
+                onValueChange={(value) => setSizeUnit(value as SizeUnitOption)}
+              >
+                <SelectTrigger className="rounded-xl">
+                  <SelectValue placeholder="Unit" />
+                </SelectTrigger>
+                <SelectContent>
+                  {SIZE_UNIT_OPTIONS.map((unit) => (
+                    <SelectItem key={unit} value={unit}>
+                      {unit}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <div className="grid grid-cols-4 items-center gap-4">
             <Label htmlFor="category" className="text-right text-sm font-medium">
               Category
             </Label>
             <div className="col-span-3">
-              <Select 
-                value={formData.category} 
+              <Select
+                value={formData.category}
                 onValueChange={(val) => setFormData({ ...formData, category: val })}
               >
                 <SelectTrigger className="rounded-xl">
                   <SelectValue placeholder="Select category" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Beer">Beer</SelectItem>
-                  <SelectItem value="Wine">Wine</SelectItem>
-                  <SelectItem value="Spirits">Spirits</SelectItem>
-                  <SelectItem value="Others">Others</SelectItem>
+                  {categorySuggestions.length === 0 ? (
+                    <SelectItem value="__no_category_available" disabled>
+                      No categories from database
+                    </SelectItem>
+                  ) : (
+                    categorySuggestions.map((category) => (
+                      <SelectItem key={category} value={category}>
+                        {category}
+                      </SelectItem>
+                    ))
+                  )}
                 </SelectContent>
               </Select>
             </div>
@@ -1113,6 +1675,7 @@ function AddProductModal({ isOpen, onClose, onAdd }: { isOpen: boolean; onClose:
               id="price"
               type="number"
               step="0.01"
+              min={0}
               value={formData.cost}
               onChange={(e) => setFormData({ ...formData, cost: e.target.value })}
               className="col-span-3 rounded-xl"
@@ -1126,13 +1689,18 @@ function AddProductModal({ isOpen, onClose, onAdd }: { isOpen: boolean; onClose:
             <Input
               id="beg"
               type="number"
+              min={0}
+              step="1"
               value={formData.beginningStock}
               onChange={(e) => setFormData({ ...formData, beginningStock: e.target.value })}
               className="col-span-3 rounded-xl"
+              required
             />
           </div>
           <DialogFooter>
-            <Button type="submit" className="rounded-xl">Save Product</Button>
+            <Button type="submit" className="rounded-xl" disabled={isSaving}>
+              {isSaving ? "Saving..." : "Save Product"}
+            </Button>
           </DialogFooter>
         </form>
       </DialogContent>

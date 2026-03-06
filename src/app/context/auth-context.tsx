@@ -10,6 +10,7 @@ type StaffPermissionRow = {
   can_add_product?: boolean | null;
   can_delete_product?: boolean | null;
   can_edit_product?: boolean | null;
+  can_archive_product?: boolean | null;
   can_grant_admin?: boolean | null;
 };
 
@@ -19,6 +20,10 @@ function normalizeStaffPermissions(perms: StaffPermissionRow | null | undefined)
     addProduct: !!perms?.can_add_product,
     deleteProduct: !!perms?.can_delete_product,
     editProduct: canEdit,
+    archiveProduct:
+      typeof perms?.can_archive_product === "boolean"
+        ? perms.can_archive_product
+        : canEdit,
     // Current schema has no separate item-level flags, so edit access also unlocks edit-mode item controls.
     addItem: canEdit,
     deleteItem: canEdit,
@@ -81,16 +86,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   ): Promise<boolean> => {
     try {
       const supabase = getSupabase();
+      const loginIdentifier = username.trim();
+      if (!loginIdentifier) return false;
 
-      // Query profile by username
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('username', username)
-        .single();
+      // Query profile by username first, then fallback to email.
+      let profile: any = null;
+      const { data: profileByUsername, error: profileByUsernameError } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("username", loginIdentifier)
+        .maybeSingle();
 
-      if (profileError || !profile) {
-        return false; // User not found
+      if (profileByUsernameError && profileByUsernameError.code !== "PGRST116") {
+        throw profileByUsernameError;
+      }
+      profile = profileByUsername;
+
+      if (!profile) {
+        const { data: profileByEmail, error: profileByEmailError } = await supabase
+          .from("profiles")
+          .select("*")
+          .ilike("email", loginIdentifier)
+          .maybeSingle();
+
+        if (profileByEmailError && profileByEmailError.code !== "PGRST116") {
+          throw profileByEmailError;
+        }
+        profile = profileByEmail;
+      }
+
+      if (!profile) {
+        return false; // User not found by username or email
       }
 
       // Query user_accounts by profile_id
@@ -111,16 +137,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return false; // Password mismatch
       }
 
-      // Check if selected role matches profile role
-      const actualRole = profile.role as 'admin' | 'staff';
+      // Check if selected role matches profile role (case-insensitive for DB values).
+      const rawRole = String(profile.role || "").toLowerCase();
+      const actualRole: "admin" | "staff" = rawRole === "admin" ? "admin" : "staff";
       const selectedRoleLower = selectedRole.toLowerCase() as 'admin' | 'staff';
 
       if (actualRole !== selectedRoleLower) {
-        throw new Error(
-          `This account is ${actualRole === "admin" ? "Admin" : "Staff"}. Select ${
-            actualRole === "admin" ? "Admin" : "Staff"
-          } role.`
-        );
+        throw new Error(`ROLE_MISMATCH:${actualRole}`);
       }
 
       // Load staff permissions if staff role
@@ -165,6 +188,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = () => {
     setUser(null);
     clearSession();
+  };
+
+  const updateUserLocal = (updates: Partial<Pick<User, "name" | "email" | "username">>) => {
+    setUser((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, ...updates };
+
+      const session = getSession();
+      if (session && session.profile_id === prev.id) {
+        setSession({
+          ...session,
+          full_name: next.name,
+          email: next.email || null,
+          username: next.username,
+        });
+      }
+
+      return next;
+    });
   };
 
   // Keep current staff permission flags in sync with Admin changes.
@@ -215,7 +257,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, login, logout, isAdmin, hasPermission }}
+      value={{ user, login, logout, isAdmin, hasPermission, updateUserLocal }}
     >
       {children}
     </AuthContext.Provider>

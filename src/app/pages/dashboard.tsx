@@ -1,22 +1,51 @@
 import { useState, useEffect } from "react";
 import { SquareArrowRight, SquareArrowLeft, ExternalLink, ChevronDown, X } from "lucide-react";
 import { useInventory } from "../context/inventory-context";
-import { format, getDaysInMonth, startOfMonth, getDay, parse, addMonths, subMonths, startOfDay, isBefore, isAfter } from "date-fns";
+import { format, getDaysInMonth, startOfMonth, getDay, parse, addMonths, subMonths, startOfDay, isBefore, isAfter, isValid } from "date-fns";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../components/ui/dialog";
 import { CurrentDateTime } from "../components/current-datetime";
 import { LowStockAlert } from "../components/low-stock-alert";
 
 type MetricType = "products" | "items" | "stockIn" | "stockOut" | null;
 
+function parseUiDate(value: string): Date | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const parsed = parse(trimmed, "yyyy-MM-dd", new Date());
+    return isValid(parsed) ? parsed : null;
+  }
+
+  if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(trimmed)) {
+    const parsed = parse(trimmed, "M-d-yyyy", new Date());
+    return isValid(parsed) ? parsed : null;
+  }
+
+  if (/^\d{1,2}-\d{1,2}-\d{2}$/.test(trimmed)) {
+    const parsed = parse(trimmed, "M-d-yy", new Date());
+    return isValid(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
 export function DashboardPage() {
   const { products, getInventoryForDate, selectedDate, setSelectedDate } = useInventory();
   
   // Parse selected date
-  const parsedSelectedDate = parse(selectedDate, "M-d-yy", new Date());
+  const parsedSelectedDate = parseUiDate(selectedDate) || new Date();
   
   // State for calendar navigation
   const [calendarMonth, setCalendarMonth] = useState(parsedSelectedDate);
   const [isMonthPickerOpen, setIsMonthPickerOpen] = useState(false);
+
+  useEffect(() => {
+    const today = new Date();
+    const todayStr = format(today, "M-d-yyyy");
+    setSelectedDate(todayStr);
+    setCalendarMonth(today);
+  }, []);
   
   // Generate year and month options
   const currentYear = new Date().getFullYear();
@@ -52,7 +81,7 @@ export function DashboardPage() {
       return; // Don't allow future dates
     }
     
-    const dateStr = `${format(displayDate, "M")}-${day}-${format(displayDate, "yy")}`;
+    const dateStr = `${format(displayDate, "M")}-${day}-${format(displayDate, "yyyy")}`;
     setSelectedDate(dateStr);
   };
 
@@ -65,7 +94,7 @@ export function DashboardPage() {
     const nextMonthStart = startOfMonth(nextMonth);
     
     // Only allow navigation if next month is not entirely in the future
-    if (isBefore(nextMonthStart, today) || isToday(nextMonthStart)) {
+    if (!isAfter(nextMonthStart, today)) {
       setCalendarMonth(nextMonth);
     }
   };
@@ -203,11 +232,11 @@ export function DashboardPage() {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-50">
+    <div className="flex min-h-screen bg-gray-50">
       {/* Main Content - shifts left when overview panel is open */}
       <div 
-        className={`flex-1 ml-16 p-8 transition-all duration-300 ease-in-out ${
-          selectedMetric ? "mr-80" : "mr-0"
+        className={`flex-1 min-w-0 ml-16 p-4 sm:p-6 lg:p-8 overflow-y-auto transition-all duration-300 ease-in-out ${
+          selectedMetric ? "xl:mr-80" : "mr-0"
         }`}
       >
         {/* Header with Date/Time */}
@@ -220,7 +249,7 @@ export function DashboardPage() {
         <LowStockAlert lowStockItems={lowStockItems} />
 
         {/* 3-Column Grid: 2 cols for metrics (2x2), 1 col for calendar */}
-        <div className="grid grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
           {/* Column 1 - Row 1: Total Products */}
           <MetricCard
             icon={<BottleGlassIcon />}
@@ -242,7 +271,7 @@ export function DashboardPage() {
           />
 
           {/* Column 3 - Row 1 & 2: Calendar (spans 2 rows vertically) */}
-          <div className="row-span-2 bg-white border border-gray-200 rounded-[16px] p-6 shadow-sm relative">
+          <div className="xl:row-span-2 bg-white border border-gray-200 rounded-[16px] p-6 shadow-sm relative">
             {/* Month/Year Header - Clickable Dropdown */}
             <button 
               onClick={() => setIsMonthPickerOpen(!isMonthPickerOpen)}
@@ -258,57 +287,63 @@ export function DashboardPage() {
                 {/* Month Selector */}
                 <div>
                   <label className="block text-[10px] font-semibold text-gray-500 uppercase mb-2">Month</label>
-                  <select
-                    value={calendarMonth.getMonth()}
-                    onChange={(e) => {
-                      const newMonth = parseInt(e.target.value);
-                      const newYear = calendarMonth.getFullYear();
-                      const newDate = new Date(newYear, newMonth, 1);
-                      
-                      // Check if this month/year combination is in the future
-                      if (newYear > currentYear || (newYear === currentYear && newMonth > currentMonth)) {
-                        return; // Don't allow future months
-                      }
-                      
-                      setCalendarMonth(newDate);
-                    }}
-                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#8B2E2E] focus:border-transparent"
-                  >
-                    {months.map((month, index) => {
-                      const isDisabled = calendarMonth.getFullYear() === currentYear && index > currentMonth;
-                      return (
-                        <option key={index} value={index} disabled={isDisabled}>
-                          {month}
-                        </option>
-                      );
-                    })}
-                  </select>
+                  <div className="relative">
+                    <select
+                      value={calendarMonth.getMonth()}
+                      onChange={(e) => {
+                        const newMonth = parseInt(e.target.value);
+                        const newYear = calendarMonth.getFullYear();
+                        const newDate = new Date(newYear, newMonth, 1);
+                        
+                        // Check if this month/year combination is in the future
+                        if (newYear > currentYear || (newYear === currentYear && newMonth > currentMonth)) {
+                          return; // Don't allow future months
+                        }
+                        
+                        setCalendarMonth(newDate);
+                      }}
+                      className="w-full h-10 px-3 pr-9 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#8B2E2E] focus:border-transparent appearance-none"
+                    >
+                      {months.map((month, index) => {
+                        const isDisabled = calendarMonth.getFullYear() === currentYear && index > currentMonth;
+                        return (
+                          <option key={index} value={index} disabled={isDisabled}>
+                            {month}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                  </div>
                 </div>
 
                 {/* Year Selector */}
                 <div>
                   <label className="block text-[10px] font-semibold text-gray-500 uppercase mb-2">Year</label>
-                  <select
-                    value={calendarMonth.getFullYear()}
-                    onChange={(e) => {
-                      const newYear = parseInt(e.target.value);
-                      const newMonth = calendarMonth.getMonth();
-                      
-                      // If selecting current year, make sure month is not in future
-                      if (newYear === currentYear && newMonth > currentMonth) {
-                        setCalendarMonth(new Date(newYear, currentMonth, 1));
-                      } else {
-                        setCalendarMonth(new Date(newYear, newMonth, 1));
-                      }
-                    }}
-                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#8B2E2E] focus:border-transparent"
-                  >
-                    {years.map((year) => (
-                      <option key={year} value={year}>
-                        {year}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <select
+                      value={calendarMonth.getFullYear()}
+                      onChange={(e) => {
+                        const newYear = parseInt(e.target.value);
+                        const newMonth = calendarMonth.getMonth();
+                        
+                        // If selecting current year, make sure month is not in future
+                        if (newYear === currentYear && newMonth > currentMonth) {
+                          setCalendarMonth(new Date(newYear, currentMonth, 1));
+                        } else {
+                          setCalendarMonth(new Date(newYear, newMonth, 1));
+                        }
+                      }}
+                      className="w-full h-10 px-3 pr-9 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#8B2E2E] focus:border-transparent appearance-none"
+                    >
+                      {years.map((year) => (
+                        <option key={year} value={year}>
+                          {year}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                  </div>
                 </div>
 
                 {/* Go to Today Button */}
@@ -317,7 +352,7 @@ export function DashboardPage() {
                     const today = new Date();
                     setCalendarMonth(today);
                     // Also set the selected date to today
-                    const todayStr = `${today.getMonth() + 1}-${today.getDate()}-${format(today, "yy")}`;
+                    const todayStr = `${today.getMonth() + 1}-${today.getDate()}-${format(today, "yyyy")}`;
                     setSelectedDate(todayStr);
                     setIsMonthPickerOpen(false);
                   }}
@@ -408,7 +443,7 @@ export function DashboardPage() {
 
       {/* Overview Panel - slides in from right */}
       {selectedMetric && (
-        <div className="fixed right-0 top-0 bottom-0 w-80 bg-[#2d2d2d] text-white shadow-2xl z-50 flex flex-col animate-slide-in">
+        <div className="fixed right-0 top-0 bottom-0 w-full sm:w-80 bg-[#2d2d2d] text-white shadow-2xl z-50 flex flex-col animate-slide-in">
           {/* Header */}
           <div className="flex items-center justify-between p-6 border-b border-gray-700">
             <h2 className="text-sm font-semibold tracking-wider">OVERVIEW</h2>

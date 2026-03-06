@@ -62,17 +62,18 @@ export function getSupabase(): SupabaseClient {
     return window.__TARZONA_SUPABASE_CLIENT__;
   }
 
+  // Prefer environment variables when available to avoid stale localStorage config.
+  // This keeps local development aligned with the current .env file.
+  const envConfig = getEnvSupabaseConfig();
+  if (envConfig) {
+    return initSupabase(envConfig, false);
+  }
+
   // Try to restore from localStorage
   const configStr = localStorage.getItem('supabase_config');
   if (configStr) {
     const config: SupabaseConfig = JSON.parse(configStr);
     return initSupabase(config);
-  }
-
-  // Fallback to environment variables (deployment-friendly)
-  const envConfig = getEnvSupabaseConfig();
-  if (envConfig) {
-    return initSupabase(envConfig, false);
   }
   
   throw new Error('Supabase not initialized. Please configure in Admin Developer Setup.');
