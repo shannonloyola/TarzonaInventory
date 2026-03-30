@@ -975,7 +975,7 @@ function TableRow({ product, inventory, isSelected, onClick, selectionMode, isSe
       <td className="py-4 px-4 text-sm text-gray-600">{product.size}</td>
       <td className="py-4 px-4">
         <span
-          className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${getCategoryBadgeClass(product.category)}`}
+          className={`inline-flex max-w-full items-center justify-center rounded-2xl px-3 py-1.5 text-center text-xs font-medium leading-tight whitespace-normal break-words ${getCategoryBadgeClass(product.category)}`}
         >
           {product.category}
         </span>
