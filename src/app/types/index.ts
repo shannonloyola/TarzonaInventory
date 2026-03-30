@@ -74,11 +74,11 @@ export interface InventoryContextType {
   getInventoryForDate: (date: string) => DailyInventory[];
   getProductById: (id: string) => Product | undefined;
   addProduct: (product: NewProductInput) => Promise<boolean>;
-  updateProduct: (id: string, updates: Partial<Product>) => void;
-  deleteProduct: (id: string) => void;
-  updateDailyInventory: (date: string, productId: string, updates: Partial<DailyInventory>) => void;
-  archiveProduct: (id: string) => void;
-  archiveAllProducts: () => void;
+  updateProduct: (id: string, updates: Partial<Product>) => Promise<boolean>;
+  deleteProduct: (id: string) => Promise<boolean>;
+  updateDailyInventory: (date: string, productId: string, updates: Partial<DailyInventory>) => Promise<boolean>;
+  archiveProduct: (id: string) => Promise<boolean>;
+  archiveAllProducts: () => Promise<boolean>;
   deleteAllProducts: () => Promise<boolean>;
   exportData: (targetDates?: string[]) => void;
   setSelectedDate: (date: string) => void;

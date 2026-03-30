@@ -107,6 +107,27 @@ function toDbDate(uiDate: string): string {
   return format(parsed, dbDateFormat);
 }
 
+function isFutureUiDate(value: string): boolean {
+  const parsed = parseFlexibleUiDate(value);
+  if (!parsed) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const candidate = new Date(parsed);
+  candidate.setHours(0, 0, 0, 0);
+  return candidate.getTime() > today.getTime();
+}
+
+function toNonNegativeInteger(value: unknown, fallback = 0): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return Math.max(0, Math.floor(fallback));
+  return Math.max(0, Math.floor(numeric));
+}
+
+function isStrictNonNegativeInteger(value: unknown): boolean {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && Number.isInteger(numeric) && numeric >= 0;
+}
+
 function toUiDate(dbDate: string): string {
   const parsed = parse(String(dbDate).slice(0, 10), dbDateFormat, new Date());
   if (!isValid(parsed)) return todayUiDate();
@@ -368,6 +389,10 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
 
   const setSelectedDate = (date: string) => {
     const parsed = parseFlexibleUiDate(date);
+    if (parsed && isFutureUiDate(date)) {
+      toast.error("Future dates are not allowed for inventory operations.");
+      return;
+    }
     const safeDate = parsed ? format(parsed, uiDateFormat) : todayUiDate();
     setSelectedDateState(safeDate);
     localStorage.setItem(selectedDateStorageKey, safeDate);
@@ -651,7 +676,8 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       .filter((entry): entry is { sheet: InventorySheet; parsed: Date } => entry.parsed !== null)
       .sort((a, b) => a.parsed.getTime() - b.parsed.getTime());
 
-    const knownProductIds = products.map((product) => product.id);
+    const activeProducts = products.filter((product) => !product.archived);
+    const knownProductIds = activeProducts.map((product) => product.id);
     const carryEndByProduct = new Map<string, number>();
 
     sortedSheets.forEach(({ sheet }) => {
@@ -719,7 +745,9 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     const carryRows = nearestPastDate ? normalizedInventoryByDate.get(nearestPastDate) || [] : [];
     const carryByProduct = new Map(carryRows.map((row) => [row.productId, row.end]));
 
-    return products.map((product) => {
+    return products
+      .filter((product) => !product.archived)
+      .map((product) => {
       const beg = carryByProduct.get(product.id) ?? 0;
       return {
         productId: product.id,
@@ -759,7 +787,17 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     activity: string,
     productId?: string,
     productName?: string,
-    qtyDelta?: number
+    qtyDelta?: number,
+    beforeAfter?: {
+      beforeBeginning?: number | null;
+      afterBeginning?: number | null;
+      beforeIn?: number | null;
+      afterIn?: number | null;
+      beforeOut?: number | null;
+      afterOut?: number | null;
+      beforeEnd?: number | null;
+      afterEnd?: number | null;
+    }
   ) => {
     if (!supabaseConfigured || !user) return;
     const dbSnapshotDate = toDbDate(selectedDate);
@@ -777,6 +815,14 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       product_id: productId || null,
       product_name: productName || null,
       qty_delta: qtyDelta ?? null,
+      before_beginning: beforeAfter?.beforeBeginning ?? null,
+      after_beginning: beforeAfter?.afterBeginning ?? null,
+      before_in: beforeAfter?.beforeIn ?? null,
+      after_in: beforeAfter?.afterIn ?? null,
+      before_out: beforeAfter?.beforeOut ?? null,
+      after_out: beforeAfter?.afterOut ?? null,
+      before_end: beforeAfter?.beforeEnd ?? null,
+      after_end: beforeAfter?.afterEnd ?? null,
       note: activity,
     });
   };
@@ -788,7 +834,11 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
 
   const addProduct = async (product: NewProductInput): Promise<boolean> => {
     const normalizedPrice = Math.max(0, Number(product.cost) || 0);
-    const normalizedBeginningStock = Math.max(0, Math.floor(Number(product.beginningStock) || 0));
+    if (!isStrictNonNegativeInteger(product.beginningStock)) {
+      toast.error("Beginning stock must be a non-negative whole number.");
+      return false;
+    }
+    const normalizedBeginningStock = toNonNegativeInteger(product.beginningStock, 0);
     const normalizedCategory = normalizeCategoryForSave(product.category);
     const normalizedSize = normalizeSizeForSave(product.size);
 
@@ -797,6 +847,10 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         const dbSnapshotDate = toDbDate(selectedDate);
         if (!dbSnapshotDate) {
           toast.error(`Invalid selected date: ${selectedDate}`);
+          return false;
+        }
+        if (isFutureUiDate(selectedDate)) {
+          toast.error("Future dates are not allowed for inventory operations.");
           return false;
         }
         const supabase = getSupabase();
@@ -878,7 +932,23 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         );
 
         pushLocalActivity(`Added new product: ${product.name}`, mapped.id, product.name);
-        await persistDbActivity("add_product", `Added new product: ${product.name}`, mapped.id, product.name);
+        await persistDbActivity(
+          "add_product",
+          `Added new product: ${product.name}`,
+          mapped.id,
+          product.name,
+          undefined,
+          {
+            beforeBeginning: null,
+            afterBeginning: normalizedBeginningStock,
+            beforeIn: null,
+            afterIn: 0,
+            beforeOut: null,
+            afterOut: 0,
+            beforeEnd: null,
+            afterEnd: normalizedBeginningStock,
+          }
+        );
         toast.success("Product added successfully");
         return true;
       } catch (err) {
@@ -892,185 +962,300 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     return false;
   };
 
-  const updateProduct = (id: string, updates: Partial<Product>) => {
-    const update = async () => {
-      const current = getProductById(id);
-      if (!current) return;
+  const updateProduct = async (id: string, updates: Partial<Product>): Promise<boolean> => {
+    const current = getProductById(id);
+    if (!current) return false;
+    const beforeSnapshot = getInventoryForDate(selectedDate).find((item) => item.productId === id);
 
-      if (supabaseConfigured) {
-        try {
-          const supabase = getSupabase();
-          const payload: Record<string, unknown> = {};
-          if (updates.name !== undefined) payload.display_name = updates.name;
-          if (updates.brand !== undefined) payload.brand = updates.brand;
-          if (updates.size !== undefined) payload.size = normalizeSizeForSave(updates.size);
-          if (updates.category !== undefined) payload.category = normalizeCategoryForSave(updates.category);
-          if (updates.cost !== undefined) payload.price = updates.cost;
-          if (updates.imageUrl !== undefined) payload.image_url = updates.imageUrl;
-          if (updates.archived !== undefined) payload.archived = updates.archived;
+    if (!supabaseConfigured) {
+      toast.error("Supabase is not configured. Product update was not saved.");
+      return false;
+    }
 
-          const { data, error } = await supabase
-            .from("products")
-            .update(payload)
-            .eq("id", id)
-            .select("id, display_name, brand, size, category, price, image_url, archived")
-            .single();
+    try {
+      const supabase = getSupabase();
+      const payload: Record<string, unknown> = {};
+      if (updates.name !== undefined) payload.display_name = updates.name;
+      if (updates.brand !== undefined) payload.brand = updates.brand;
+      if (updates.size !== undefined) payload.size = normalizeSizeForSave(updates.size);
+      if (updates.category !== undefined) payload.category = normalizeCategoryForSave(updates.category);
+      if (updates.cost !== undefined) payload.price = updates.cost;
+      if (updates.imageUrl !== undefined) payload.image_url = updates.imageUrl;
+      if (updates.archived !== undefined) payload.archived = updates.archived;
 
-          if (error) throw error;
-          const mapped = mapProductRow(data as ProductRow);
-          setProducts((prev) => prev.map((p) => (p.id === id ? mapped : p)));
+      const { data, error } = await supabase
+        .from("products")
+        .update(payload)
+        .eq("id", id)
+        .select("id, display_name, brand, size, category, price, image_url, archived")
+        .single();
 
-          const activity = `Updated product details for ${mapped.name}`;
-          pushLocalActivity(activity, id, mapped.name);
-          await persistDbActivity("edit_product", activity, id, mapped.name);
-          toast.success("Product updated successfully");
-          return;
-        } catch (err) {
-          console.error("Failed to update product in Supabase:", err);
-          toast.error("Failed to update product in Supabase");
-          return;
-        }
-      } else {
-        toast.error("Supabase is not configured. Product update was not saved.");
-      }
-    };
+      if (error) throw error;
+      const mapped = mapProductRow(data as ProductRow);
+      setProducts((prev) => prev.map((p) => (p.id === id ? mapped : p)));
 
-    void update();
+      const activity = `Updated product details for ${mapped.name}`;
+      pushLocalActivity(activity, id, mapped.name);
+      await persistDbActivity("edit_product", activity, id, mapped.name, undefined, {
+        beforeBeginning: beforeSnapshot?.beg ?? null,
+        afterBeginning: beforeSnapshot?.beg ?? null,
+        beforeIn: beforeSnapshot?.in ?? null,
+        afterIn: beforeSnapshot?.in ?? null,
+        beforeOut: beforeSnapshot?.out ?? null,
+        afterOut: beforeSnapshot?.out ?? null,
+        beforeEnd: beforeSnapshot?.end ?? null,
+        afterEnd: beforeSnapshot?.end ?? null,
+      });
+      toast.success("Product updated successfully");
+      return true;
+    } catch (err) {
+      console.error("Failed to update product in Supabase:", err);
+      toast.error("Failed to update product in Supabase");
+      return false;
+    }
   };
 
-  const deleteProduct = (id: string) => {
-    const remove = async () => {
-      const product = getProductById(id);
-      if (!product) return;
-
-      if (supabaseConfigured) {
-        try {
-          const supabase = getSupabase();
-          const { error } = await supabase.from("products").delete().eq("id", id);
-          if (error) throw error;
-        } catch (err) {
-          console.error("Failed to delete product in Supabase:", err);
-          toast.error("Failed to delete product in Supabase");
-          return;
-        }
-      } else {
-        toast.error("Supabase is not configured. Product delete was not saved.");
-      }
-    };
-
-    void remove();
-  };
-
-  const updateDailyInventory = (date: string, productId: string, updates: Partial<DailyInventory>) => {
-    const update = async () => {
-      const dbSnapshotDate = toDbDate(date);
-      if (!dbSnapshotDate) {
-        toast.error(`Invalid selected date: ${date}`);
-        return;
-      }
-      const existing = getInventoryForDate(date).find((item) => item.productId === productId);
-      const baseBeginning = existing?.beg ?? 0;
-      const base: DailyInventory = existing
-        ? { ...existing, beg: baseBeginning }
-        : { productId, beg: baseBeginning, in: 0, total: baseBeginning, out: 0, end: baseBeginning };
-
-      const next: DailyInventory = {
-        ...base,
-        ...updates,
-      };
-      next.beg = baseBeginning;
-      next.in = Math.max(0, next.in);
-      next.total = next.beg + next.in;
-      next.out = Math.max(0, Math.min(next.out, next.total));
-      next.end = next.total - next.out;
-
-      if (supabaseConfigured) {
-        try {
-          const supabase = getSupabase();
-          const { error } = await supabase.from("inventory_snapshot").upsert(
-            {
-              product_id: productId,
-              snapshot_date: dbSnapshotDate,
-              beginning_qty: next.beg,
-              stock_in_qty: next.in,
-              stock_out_qty: next.out,
-              end_qty: next.end,
-            },
-            { onConflict: "product_id,snapshot_date" }
-          );
-
-          if (error) throw error;
-        } catch (err) {
-          console.error("Failed to update inventory snapshot:", err);
-          const errorMessage =
-            err && typeof err === "object" && "message" in err
-              ? String((err as { message?: unknown }).message || "Unknown error")
-              : "Unknown error";
-          toast.error(`Failed to update inventory in Supabase: ${errorMessage}`);
-          return;
-        }
-      } else {
-        toast.error("Supabase is not configured. Inventory update was not saved.");
-        return;
-      }
-
-      setInventorySheets((prev) => upsertLocalInventorySheet(prev, date, next));
-
-      const product = getProductById(productId);
-      let activityStr = `Updated inventory for ${product?.name || "Unknown"}`;
-      let txnType: TransactionType = "edit_product";
-      let qtyDelta: number | undefined = undefined;
-
-      if (updates.in !== undefined) {
-        activityStr = `Updated stock IN for ${product?.name || "Unknown"}`;
-        txnType = "stock_in";
-        qtyDelta = updates.in - (existing?.in || 0);
-      } else if (updates.out !== undefined) {
-        activityStr = `Updated stock OUT for ${product?.name || "Unknown"}`;
-        txnType = "stock_out";
-        qtyDelta = updates.out - (existing?.out || 0);
-      } else if (updates.beg !== undefined) {
-        activityStr = `Updated beginning inventory for ${product?.name || "Unknown"}`;
-        txnType = "beginning_set";
-        qtyDelta = updates.beg - (existing?.beg || 0);
-      }
-
-      pushLocalActivity(activityStr, productId, product?.name);
-      await persistDbActivity(txnType, activityStr, productId, product?.name, qtyDelta);
-      toast.success("Inventory updated successfully");
-    };
-
-    void update();
-  };
-
-  const archiveProduct = (id: string) => {
-    updateProduct(id, { archived: true });
+  const deleteProduct = async (id: string): Promise<boolean> => {
     const product = getProductById(id);
-    void persistDbActivity("archive_product", `Archived product: ${product?.name || "Unknown"}`, id, product?.name);
-    toast.success("Product archived");
+    if (!product) return false;
+    const beforeSnapshot = getInventoryForDate(selectedDate).find((item) => item.productId === id);
+
+    if (!supabaseConfigured) {
+      toast.error("Supabase is not configured. Product delete was not saved.");
+      return false;
+    }
+
+    try {
+      const supabase = getSupabase();
+      const { error } = await supabase.from("products").delete().eq("id", id);
+      if (error) throw error;
+      setProducts((prev) => prev.filter((p) => p.id !== id));
+      setInventorySheets((prev) =>
+        prev
+          .map((sheet) => ({
+            ...sheet,
+            items: sheet.items.filter((item) => item.productId !== id),
+          }))
+          .filter((sheet) => sheet.items.length > 0)
+      );
+      pushLocalActivity(`Deleted product: ${product.name}`, id, product.name);
+      await persistDbActivity("delete_product", `Deleted product: ${product.name}`, id, product.name, undefined, {
+        beforeBeginning: beforeSnapshot?.beg ?? null,
+        afterBeginning: null,
+        beforeIn: beforeSnapshot?.in ?? null,
+        afterIn: null,
+        beforeOut: beforeSnapshot?.out ?? null,
+        afterOut: null,
+        beforeEnd: beforeSnapshot?.end ?? null,
+        afterEnd: null,
+      });
+      return true;
+    } catch (err) {
+      console.error("Failed to delete product in Supabase:", err);
+      toast.error("Failed to delete product in Supabase");
+      return false;
+    }
   };
 
-  const archiveAllProducts = () => {
-    const archiveAll = async () => {
-      if (supabaseConfigured) {
-        try {
-          const supabase = getSupabase();
-          const { error } = await supabase.from("products").update({ archived: true }).eq("archived", false);
-          if (error) throw error;
-        } catch (err) {
-          console.error("Failed to archive all products in Supabase:", err);
-          toast.error("Failed to archive all products in Supabase");
-          return;
-        }
-      }
+  const updateDailyInventory = async (
+    date: string,
+    productId: string,
+    updates: Partial<DailyInventory>
+  ): Promise<boolean> => {
+    if (isFutureUiDate(date)) {
+      toast.error("Future dates are not allowed for inventory operations.");
+      return false;
+    }
 
-      setProducts((prev) => prev.map((p) => ({ ...p, archived: true })));
-      pushLocalActivity("Archived all products");
-      await persistDbActivity("archive_all", "Archived all products");
-      toast.success("All products archived");
+    const product = getProductById(productId);
+    if (!product) return false;
+    if (product.archived) {
+      toast.error("Archived products are excluded from active inventory updates.");
+      return false;
+    }
+
+    const dbSnapshotDate = toDbDate(date);
+    if (!dbSnapshotDate) {
+      toast.error(`Invalid selected date: ${date}`);
+      return false;
+    }
+
+    const existing = getInventoryForDate(date).find((item) => item.productId === productId);
+    const baseBeginning = existing?.beg ?? 0;
+    const base: DailyInventory = existing
+      ? { ...existing, beg: baseBeginning }
+      : { productId, beg: baseBeginning, in: 0, total: baseBeginning, out: 0, end: baseBeginning };
+
+    if (updates.beg !== undefined && !isStrictNonNegativeInteger(updates.beg)) {
+      toast.error("Beginning stock must be a non-negative whole number.");
+      return false;
+    }
+    if (updates.in !== undefined && !isStrictNonNegativeInteger(updates.in)) {
+      toast.error("Stock-in must be a non-negative whole number.");
+      return false;
+    }
+    if (updates.out !== undefined && !isStrictNonNegativeInteger(updates.out)) {
+      toast.error("Stock-out must be a non-negative whole number.");
+      return false;
+    }
+
+    const requestedIn = toNonNegativeInteger(updates.in ?? base.in, base.in);
+    const requestedOut = toNonNegativeInteger(updates.out ?? base.out, base.out);
+    const requestedBeg = toNonNegativeInteger(updates.beg ?? base.beg, base.beg);
+
+    const next: DailyInventory = {
+      ...base,
+      ...updates,
+      beg: requestedBeg,
+      in: requestedIn,
+      out: requestedOut,
+      total: 0,
+      end: 0,
     };
+    next.total = next.beg + next.in;
+    next.out = Math.max(0, Math.min(next.out, next.total));
+    next.end = next.total - next.out;
 
-    void archiveAll();
+    if (!supabaseConfigured) {
+      toast.error("Supabase is not configured. Inventory update was not saved.");
+      return false;
+    }
+
+    try {
+      const supabase = getSupabase();
+      const { error } = await supabase.from("inventory_snapshot").upsert(
+        {
+          product_id: productId,
+          snapshot_date: dbSnapshotDate,
+          beginning_qty: next.beg,
+          stock_in_qty: next.in,
+          stock_out_qty: next.out,
+          end_qty: next.end,
+        },
+        { onConflict: "product_id,snapshot_date" }
+      );
+
+      if (error) throw error;
+    } catch (err) {
+      console.error("Failed to update inventory snapshot:", err);
+      const errorMessage =
+        err && typeof err === "object" && "message" in err
+          ? String((err as { message?: unknown }).message || "Unknown error")
+          : "Unknown error";
+      toast.error(`Failed to update inventory in Supabase: ${errorMessage}`);
+      return false;
+    }
+
+    setInventorySheets((prev) => upsertLocalInventorySheet(prev, date, next));
+
+    let activityStr = `Updated inventory for ${product.name || "Unknown"}`;
+    let txnType: TransactionType = "edit_product";
+    let qtyDelta: number | undefined = undefined;
+
+    if (updates.in !== undefined) {
+      activityStr = `Updated stock IN for ${product.name || "Unknown"}`;
+      txnType = "stock_in";
+      qtyDelta = next.in - (existing?.in || 0);
+    } else if (updates.out !== undefined) {
+      activityStr = `Updated stock OUT for ${product.name || "Unknown"}`;
+      txnType = "stock_out";
+      qtyDelta = next.out - (existing?.out || 0);
+    } else if (updates.beg !== undefined) {
+      activityStr = `Updated beginning inventory for ${product.name || "Unknown"}`;
+      txnType = "beginning_set";
+      qtyDelta = next.beg - (existing?.beg || 0);
+    }
+
+    pushLocalActivity(activityStr, productId, product.name);
+    await persistDbActivity(txnType, activityStr, productId, product.name, qtyDelta, {
+      beforeBeginning: existing?.beg ?? null,
+      afterBeginning: next.beg,
+      beforeIn: existing?.in ?? null,
+      afterIn: next.in,
+      beforeOut: existing?.out ?? null,
+      afterOut: next.out,
+      beforeEnd: existing?.end ?? null,
+      afterEnd: next.end,
+    });
+    toast.success("Inventory updated successfully");
+    return true;
+  };
+
+  const archiveProduct = async (id: string): Promise<boolean> => {
+    const product = getProductById(id);
+    if (!product) return false;
+    if (product.archived) return true;
+
+    const beforeSnapshot = getInventoryForDate(selectedDate).find((item) => item.productId === id);
+
+    if (!supabaseConfigured) {
+      toast.error("Supabase is not configured. Product archive was not saved.");
+      return false;
+    }
+
+    try {
+      const supabase = getSupabase();
+      const { data, error } = await supabase
+        .from("products")
+        .update({ archived: true })
+        .eq("id", id)
+        .select("id, display_name, brand, size, category, price, image_url, archived")
+        .single();
+
+      if (error) throw error;
+      const mapped = mapProductRow(data as ProductRow);
+      setProducts((prev) => prev.map((p) => (p.id === id ? mapped : p)));
+
+      const activity = `Archived product: ${mapped.name}`;
+      pushLocalActivity(activity, id, mapped.name);
+      await persistDbActivity("archive_product", activity, id, mapped.name, undefined, {
+        beforeBeginning: beforeSnapshot?.beg ?? null,
+        afterBeginning: beforeSnapshot?.beg ?? null,
+        beforeIn: beforeSnapshot?.in ?? null,
+        afterIn: beforeSnapshot?.in ?? null,
+        beforeOut: beforeSnapshot?.out ?? null,
+        afterOut: beforeSnapshot?.out ?? null,
+        beforeEnd: beforeSnapshot?.end ?? null,
+        afterEnd: beforeSnapshot?.end ?? null,
+      });
+      return true;
+    } catch (err) {
+      console.error("Failed to archive product in Supabase:", err);
+      toast.error("Failed to archive product in Supabase");
+      return false;
+    }
+  };
+
+  const archiveAllProducts = async (): Promise<boolean> => {
+    if (!supabaseConfigured) {
+      toast.error("Supabase is not configured. Archive all was not saved.");
+      return false;
+    }
+
+    try {
+      const supabase = getSupabase();
+      const { error } = await supabase.from("products").update({ archived: true }).eq("archived", false);
+      if (error) throw error;
+    } catch (err) {
+      console.error("Failed to archive all products in Supabase:", err);
+      toast.error("Failed to archive all products in Supabase");
+      return false;
+    }
+
+    setProducts((prev) => prev.map((p) => ({ ...p, archived: true })));
+    pushLocalActivity("Archived all products");
+    await persistDbActivity("archive_all", "Archived all products", undefined, undefined, undefined, {
+      beforeBeginning: null,
+      afterBeginning: null,
+      beforeIn: null,
+      afterIn: null,
+      beforeOut: null,
+      afterOut: null,
+      beforeEnd: null,
+      afterEnd: null,
+    });
+    toast.success("All products archived");
+    return true;
   };
 
   const deleteAllProducts = async (): Promise<boolean> => {

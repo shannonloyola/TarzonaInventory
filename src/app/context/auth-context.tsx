@@ -3,6 +3,12 @@ import { AuthContextType, User, Role, StaffPermissions } from "../types";
 import { getSupabase, isSupabaseConfigured } from "../../lib/supabase";
 import { getSession, setSession, clearSession, SessionData } from "../../lib/db-utils";
 import bcrypt from "bcryptjs";
+import {
+  createLegacyAuthAdapter,
+  createSupabaseAuthAdapterNotReady,
+  AuthAdapter,
+} from "../../lib/auth-adapter";
+import { getSecurityConfig } from "../../lib/security-config";
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -32,15 +38,30 @@ function normalizeStaffPermissions(perms: StaffPermissionRow | null | undefined)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const security = getSecurityConfig();
 
   // Restore session on mount
   useEffect(() => {
-    const session = getSession();
-    if (session) {
-      // Restore user from session
-      loadUserFromSession(session);
-    }
+    const run = async () => {
+      if (security.authProviderMode === "legacy") {
+        const session = getSession();
+        if (session) {
+          // Restore user from session
+          await loadUserFromSession(session);
+        }
+        return;
+      }
+
+      // Supabase Auth mode scaffold only. Cutover remains disabled by default.
+      await restoreFromSupabaseAuthSession();
+    };
+
+    void run();
   }, []);
+
+  const restoreFromSupabaseAuthSession = async (): Promise<User | null> => {
+    return null;
+  };
 
   const loadUserFromSession = async (session: SessionData) => {
     try {
@@ -84,6 +105,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     password: string,
     selectedRole: Role
   ): Promise<boolean> => {
+    if (security.authProviderMode === "supabase_auth") {
+      const supabaseAuthAdapter = createSupabaseAuthAdapterNotReady();
+      await supabaseAuthAdapter.login({ username, password, selectedRole });
+      return false;
+    }
+
     try {
       const supabase = getSupabase();
       const loginIdentifier = username.trim();
@@ -189,6 +216,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     clearSession();
   };
+
+  const legacyAuthAdapter: AuthAdapter = createLegacyAuthAdapter({
+    // Scaffold only: business flow still uses existing legacy login/logout above.
+    login: async () => ({ success: false }),
+    restoreSession: async () => null,
+    logout: async () => undefined,
+  });
+
+  // Keep adapter scaffold referenced for zero-behavior-change hardening groundwork.
+  void legacyAuthAdapter;
 
   const updateUserLocal = (updates: Partial<Pick<User, "name" | "email" | "username">>) => {
     setUser((prev) => {

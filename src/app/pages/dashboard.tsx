@@ -41,11 +41,9 @@ export function DashboardPage() {
   const [isMonthPickerOpen, setIsMonthPickerOpen] = useState(false);
 
   useEffect(() => {
-    const today = new Date();
-    const todayStr = format(today, "M-d-yyyy");
-    setSelectedDate(todayStr);
-    setCalendarMonth(today);
-  }, []);
+    if (!parsedSelectedDate) return;
+    setCalendarMonth(parsedSelectedDate);
+  }, [selectedDate]);
   
   // Generate year and month options
   const currentYear = new Date().getFullYear();
@@ -58,9 +56,12 @@ export function DashboardPage() {
 
   // Calculate metrics based on SELECTED DATE
   const activeProducts = products.filter((p) => !p.archived);
+  const activeProductIds = new Set(activeProducts.map((p) => p.id));
   const totalProducts = activeProducts.length;
   
-  const currentInventory = getInventoryForDate(selectedDate);
+  const currentInventory = getInventoryForDate(selectedDate).filter((item) =>
+    activeProductIds.has(item.productId)
+  );
   const totalItems = currentInventory.reduce((sum, item) => sum + item.end, 0);
   const totalStockIn = currentInventory.reduce((sum, item) => sum + item.in, 0);
   const totalStockOut = currentInventory.reduce((sum, item) => sum + item.out, 0);
@@ -111,7 +112,7 @@ export function DashboardPage() {
       return item.end <= threshold;
     })
     .map(item => {
-      const product = products.find(p => p.id === item.productId);
+      const product = activeProducts.find(p => p.id === item.productId);
       return {
         product: product!,
         current: item.end,
@@ -127,7 +128,7 @@ export function DashboardPage() {
       // For products, just show distinct products (doesn't matter which data)
       return currentInventory
         .map(item => {
-          const product = products.find(p => p.id === item.productId);
+          const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
             quantity: item.end
@@ -139,7 +140,7 @@ export function DashboardPage() {
       // For items, show by end stock quantity
       return currentInventory
         .map(item => {
-          const product = products.find(p => p.id === item.productId);
+          const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
             quantity: item.end
@@ -152,7 +153,7 @@ export function DashboardPage() {
       return currentInventory
         .filter(item => item.in > 0)
         .map(item => {
-          const product = products.find(p => p.id === item.productId);
+          const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
             quantity: item.in
@@ -165,7 +166,7 @@ export function DashboardPage() {
       return currentInventory
         .filter(item => item.out > 0)
         .map(item => {
-          const product = products.find(p => p.id === item.productId);
+          const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
             quantity: item.out
@@ -183,7 +184,7 @@ export function DashboardPage() {
     if (selectedMetric === "products") {
       return currentInventory
         .map(item => {
-          const product = products.find(p => p.id === item.productId);
+          const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
             category: product?.category || "Unknown",
@@ -194,7 +195,7 @@ export function DashboardPage() {
     } else if (selectedMetric === "items") {
       return currentInventory
         .map(item => {
-          const product = products.find(p => p.id === item.productId);
+          const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
             category: product?.category || "Unknown",
@@ -206,7 +207,7 @@ export function DashboardPage() {
       return currentInventory
         .filter(item => item.in > 0)
         .map(item => {
-          const product = products.find(p => p.id === item.productId);
+          const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
             category: product?.category || "Unknown",
@@ -218,7 +219,7 @@ export function DashboardPage() {
       return currentInventory
         .filter(item => item.out > 0)
         .map(item => {
-          const product = products.find(p => p.id === item.productId);
+          const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
             category: product?.category || "Unknown",
@@ -284,39 +285,6 @@ export function DashboardPage() {
             {/* Month/Year Picker Dropdown - Absolute positioned overlay */}
             {isMonthPickerOpen && (
               <div className="absolute top-16 left-6 right-6 z-50 p-4 bg-white rounded-lg border-2 border-[#8B2E2E] shadow-xl space-y-3">
-                {/* Month Selector */}
-                <div>
-                  <label className="block text-[10px] font-semibold text-gray-500 uppercase mb-2">Month</label>
-                  <div className="relative">
-                    <select
-                      value={calendarMonth.getMonth()}
-                      onChange={(e) => {
-                        const newMonth = parseInt(e.target.value);
-                        const newYear = calendarMonth.getFullYear();
-                        const newDate = new Date(newYear, newMonth, 1);
-                        
-                        // Check if this month/year combination is in the future
-                        if (newYear > currentYear || (newYear === currentYear && newMonth > currentMonth)) {
-                          return; // Don't allow future months
-                        }
-                        
-                        setCalendarMonth(newDate);
-                      }}
-                      className="w-full h-10 px-3 pr-9 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#8B2E2E] focus:border-transparent appearance-none"
-                    >
-                      {months.map((month, index) => {
-                        const isDisabled = calendarMonth.getFullYear() === currentYear && index > currentMonth;
-                        return (
-                          <option key={index} value={index} disabled={isDisabled}>
-                            {month}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-                  </div>
-                </div>
-
                 {/* Year Selector */}
                 <div>
                   <label className="block text-[10px] font-semibold text-gray-500 uppercase mb-2">Year</label>
@@ -326,7 +294,7 @@ export function DashboardPage() {
                       onChange={(e) => {
                         const newYear = parseInt(e.target.value);
                         const newMonth = calendarMonth.getMonth();
-                        
+
                         // If selecting current year, make sure month is not in future
                         if (newYear === currentYear && newMonth > currentMonth) {
                           setCalendarMonth(new Date(newYear, currentMonth, 1));
@@ -341,6 +309,39 @@ export function DashboardPage() {
                           {year}
                         </option>
                       ))}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                  </div>
+                </div>
+
+                {/* Month Selector */}
+                <div>
+                  <label className="block text-[10px] font-semibold text-gray-500 uppercase mb-2">Month</label>
+                  <div className="relative">
+                    <select
+                      value={calendarMonth.getMonth()}
+                      onChange={(e) => {
+                        const newMonth = parseInt(e.target.value);
+                        const newYear = calendarMonth.getFullYear();
+                        const newDate = new Date(newYear, newMonth, 1);
+
+                        // Check if this month/year combination is in the future
+                        if (newYear > currentYear || (newYear === currentYear && newMonth > currentMonth)) {
+                          return; // Don't allow future months
+                        }
+
+                        setCalendarMonth(newDate);
+                      }}
+                      className="w-full h-10 px-3 pr-9 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#8B2E2E] focus:border-transparent appearance-none"
+                    >
+                      {months.map((month, index) => {
+                        const isDisabled = calendarMonth.getFullYear() === currentYear && index > currentMonth;
+                        return (
+                          <option key={index} value={index} disabled={isDisabled}>
+                            {month}
+                          </option>
+                        );
+                      })}
                     </select>
                     <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
                   </div>
@@ -574,7 +575,7 @@ export function DashboardPage() {
                     .filter(i => i.in > 0 || i.out > 0)
                     .sort((a, b) => b.out - a.out) // Sort by most "out" first
                     .map((item) => {
-                    const product = products.find(p => p.id === item.productId);
+                    const product = activeProducts.find(p => p.id === item.productId);
                     return (
                       <tr key={item.productId}>
                         <td className="py-2 px-3 text-sm">{product?.name || "Unknown"}</td>

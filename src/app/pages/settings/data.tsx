@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useInventory } from "../../context/inventory-context";
 import { useAuth } from "../../context/auth-context";
 import { toast } from "sonner";
@@ -7,6 +7,7 @@ import bcrypt from "bcryptjs";
 import { AnimatePresence, motion } from "motion/react";
 import { X } from "lucide-react";
 import { format, isValid, parse } from "date-fns";
+import { AdminPasswordConfirmModal } from "../../components/admin-password-confirm-modal";
 
 export function DataManagementPage() {
   const {
@@ -25,6 +26,12 @@ export function DataManagementPage() {
   const [adminPassword, setAdminPassword] = useState("");
   const [passwordError, setPasswordError] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isPasswordConfirmOpen, setIsPasswordConfirmOpen] = useState(false);
+  const [passwordConfirmActionLabel, setPasswordConfirmActionLabel] = useState("");
+  const [passwordConfirmValue, setPasswordConfirmValue] = useState("");
+  const [passwordConfirmError, setPasswordConfirmError] = useState("");
+  const [isPasswordConfirming, setIsPasswordConfirming] = useState(false);
+  const passwordConfirmResolverRef = useRef<((value: boolean) => void) | null>(null);
   const [exportDateInput, setExportDateInput] = useState<string>(() => {
     const parsed = parse(selectedDate, "M-d-yy", new Date());
     return isValid(parsed) ? format(parsed, "yyyy-MM-dd") : format(new Date(), "yyyy-MM-dd");
@@ -50,6 +57,51 @@ export function DataManagementPage() {
     return bcrypt.compare(plainPassword, account.password_hash);
   };
 
+  const closePasswordPrompt = (result: boolean) => {
+    const resolver = passwordConfirmResolverRef.current;
+    passwordConfirmResolverRef.current = null;
+    setIsPasswordConfirmOpen(false);
+    setPasswordConfirmActionLabel("");
+    setPasswordConfirmValue("");
+    setPasswordConfirmError("");
+    if (resolver) resolver(result);
+  };
+
+  const requestAdminPasswordVerification = async (actionLabel: string): Promise<boolean> => {
+    setPasswordConfirmActionLabel(actionLabel);
+    setPasswordConfirmValue("");
+    setPasswordConfirmError("");
+    setIsPasswordConfirmOpen(true);
+    return new Promise<boolean>((resolve) => {
+      passwordConfirmResolverRef.current = resolve;
+    });
+  };
+
+  const handlePasswordPromptCancel = () => {
+    if (isPasswordConfirming) return;
+    closePasswordPrompt(false);
+  };
+
+  const handlePasswordPromptConfirm = async () => {
+    if (isPasswordConfirming) return;
+    const entered = passwordConfirmValue.trim();
+    if (!entered) {
+      setPasswordConfirmError("Please enter your admin password.");
+      return;
+    }
+    setIsPasswordConfirming(true);
+    try {
+      const valid = await verifyCurrentAdminPassword(entered);
+      if (!valid) {
+        setPasswordConfirmError("Incorrect admin password.");
+        return;
+      }
+      closePasswordPrompt(true);
+    } finally {
+      setIsPasswordConfirming(false);
+    }
+  };
+
   const handleArchiveAll = () => {
     setShowArchiveAllModal(true);
     setAdminPassword("");
@@ -57,18 +109,31 @@ export function DataManagementPage() {
   };
 
   const handleConfirmArchiveAll = () => {
-    if (isProcessing) return;
-    setIsProcessing(true);
-    try {
-      archiveAllProducts();
+    const run = async () => {
+      if (isProcessing) return;
+      setIsProcessing(true);
+      const valid = await verifyCurrentAdminPassword(adminPassword);
+      if (!valid) {
+        setPasswordError("Incorrect admin password");
+        setIsProcessing(false);
+        return;
+      }
+      const success = await archiveAllProducts();
+      if (!success) {
+        setIsProcessing(false);
+        return;
+      }
       setShowArchiveAllModal(false);
-    } finally {
+      setAdminPassword("");
+      setPasswordError("");
       setIsProcessing(false);
-    }
+    };
+    void run();
   };
 
   const handleDeleteAll = () => {
     setShowDeleteAllModal(true);
+    setAdminPassword("");
     setPasswordError("");
   };
 
@@ -95,21 +160,57 @@ export function DataManagementPage() {
   };
 
   const handleRestoreArchivedProduct = (productId: string, productName: string) => {
-    updateProduct(productId, { archived: false });
-    toast.success(`Restored ${productName}`);
+    const run = async () => {
+      if (isProcessing) return;
+      const valid = await requestAdminPasswordVerification(`restore ${productName}`);
+      if (!valid) return;
+      setIsProcessing(true);
+      try {
+        const success = await updateProduct(productId, { archived: false });
+        if (!success) return;
+        toast.success(`Restored ${productName}`);
+      } finally {
+        setIsProcessing(false);
+      }
+    };
+    void run();
   };
 
   const handleDeleteArchivedProduct = (productId: string, productName: string) => {
-    deleteProduct(productId);
-    toast.success(`Deleted ${productName}`);
+    const run = async () => {
+      if (isProcessing) return;
+      const valid = await requestAdminPasswordVerification(`delete ${productName}`);
+      if (!valid) return;
+      setIsProcessing(true);
+      try {
+        const success = await deleteProduct(productId);
+        if (!success) return;
+        toast.success(`Deleted ${productName}`);
+      } finally {
+        setIsProcessing(false);
+      }
+    };
+    void run();
   };
 
   const handleRestoreAllArchivedProducts = () => {
-    if (archivedProducts.length === 0) return;
-    archivedProducts.forEach((product) => {
-      updateProduct(product.id, { archived: false });
-    });
-    toast.success(`Restored ${archivedProducts.length} archived product(s)`);
+    const run = async () => {
+      if (archivedProducts.length === 0 || isProcessing) return;
+      const valid = await requestAdminPasswordVerification("restore all archived products");
+      if (!valid) return;
+      setIsProcessing(true);
+      try {
+        const results = await Promise.all(
+          archivedProducts.map((product) => updateProduct(product.id, { archived: false }))
+        );
+        const successCount = results.filter(Boolean).length;
+        if (successCount === 0) return;
+        toast.success(`Restored ${successCount} archived product(s)`);
+      } finally {
+        setIsProcessing(false);
+      }
+    };
+    void run();
   };
 
   const handleAddExportDate = () => {
@@ -283,12 +384,14 @@ export function DataManagementPage() {
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => handleRestoreArchivedProduct(product.id, product.name)}
+                        disabled={isProcessing}
                         className="px-3 py-1.5 border border-gray-300 text-gray-700 rounded text-xs font-medium hover:bg-gray-50"
                       >
                         Restore
                       </button>
                       <button
                         onClick={() => handleDeleteArchivedProduct(product.id, product.name)}
+                        disabled={isProcessing}
                         className="px-3 py-1.5 border border-red-300 text-red-600 rounded text-xs font-medium hover:bg-red-50"
                       >
                         Delete
@@ -302,7 +405,7 @@ export function DataManagementPage() {
             <div className="flex justify-between items-center mt-6">
               <button
                 onClick={handleRestoreAllArchivedProducts}
-                disabled={archivedProducts.length === 0}
+                disabled={archivedProducts.length === 0 || isProcessing}
                 className="px-4 py-2 border border-gray-300 text-gray-700 rounded text-sm hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Restore All
@@ -346,6 +449,21 @@ export function DataManagementPage() {
               To revert this, go to <strong>Data Controls -&gt; Archived Products -&gt; Manage</strong> and click
               <strong> Restore</strong> on the items you want to bring back.
             </p>
+            <div className="mb-4">
+              <input
+                type="password"
+                value={adminPassword}
+                onChange={(e) => {
+                  setAdminPassword(e.target.value);
+                  setPasswordError("");
+                }}
+                className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-red-500"
+                placeholder="Please type in your admin password"
+              />
+              {passwordError && (
+                <p className="text-red-600 text-xs mt-2">{passwordError}</p>
+              )}
+            </div>
 
             <div className="flex gap-3">
               <button
@@ -354,6 +472,7 @@ export function DataManagementPage() {
                   setAdminPassword("");
                   setPasswordError("");
                 }}
+                disabled={isProcessing}
                 className="flex-1 px-4 py-2 bg-gray-800 text-white rounded text-sm hover:bg-gray-900"
               >
                 Cancel
@@ -406,6 +525,7 @@ export function DataManagementPage() {
                   setAdminPassword("");
                   setPasswordError("");
                 }}
+                disabled={isProcessing}
                 className="flex-1 px-4 py-2 bg-gray-800 text-white rounded text-sm hover:bg-gray-900"
               >
                 Cancel
@@ -421,6 +541,20 @@ export function DataManagementPage() {
           </div>
         </div>
       )}
+
+      <AdminPasswordConfirmModal
+        open={isPasswordConfirmOpen}
+        actionLabel={passwordConfirmActionLabel}
+        password={passwordConfirmValue}
+        errorMessage={passwordConfirmError}
+        isSubmitting={isPasswordConfirming}
+        onPasswordChange={(value) => {
+          setPasswordConfirmValue(value);
+          setPasswordConfirmError("");
+        }}
+        onCancel={handlePasswordPromptCancel}
+        onConfirm={handlePasswordPromptConfirm}
+      />
     </div>
   );
 }

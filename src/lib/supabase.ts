@@ -34,6 +34,7 @@ export function initSupabase(config: SupabaseConfig, persistLocal = true): Supab
   window.__TARZONA_SUPABASE_INITIALIZING__ = true;
 
   try {
+    // Compatibility mode: keep manual session handling until Supabase Auth cutover is explicitly enabled.
     window.__TARZONA_SUPABASE_CLIENT__ = createClient(config.url, config.anonKey, {
       auth: {
         persistSession: false, // We handle sessions manually

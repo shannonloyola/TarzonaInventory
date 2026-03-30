@@ -8,6 +8,7 @@ import { SettingsLayout } from "./pages/settings/layout";
 import { HashGenerator } from "./pages/hash-generator";
 import { LoginDiagnostic } from "./pages/login-diagnostic";
 import { ResetPasswordPage } from "./pages/reset-password";
+import { RouteAccessGate } from "./components/security/route-access-gate";
 
 // Protected Route Wrapper
 function ProtectedRoute({
@@ -16,10 +17,12 @@ function ProtectedRoute({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex w-full min-h-screen">
-      <Sidebar />
-      <div className="flex-1 min-w-0">{children}</div>
-    </div>
+    <RouteAccessGate>
+      <div className="flex w-full min-h-screen">
+        <Sidebar />
+        <div className="flex-1 min-w-0">{children}</div>
+      </div>
+    </RouteAccessGate>
   );
 }
 

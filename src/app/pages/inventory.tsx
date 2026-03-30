@@ -14,6 +14,8 @@ import { CurrentDateTime } from "../components/current-datetime";
 import { format, isValid, parse, subDays } from "date-fns";
 import { getSupabase, isSupabaseConfigured } from "../../lib/supabase";
 import { toast } from "sonner";
+import bcrypt from "bcryptjs";
+import { AdminPasswordConfirmModal } from "../components/admin-password-confirm-modal";
 
 const Edit = Pencil;
 
@@ -171,8 +173,8 @@ function composeSizeInput(value: string, unit: SizeUnitOption, other: string): s
 }
 
 export function InventoryPage() {
-  const { products, getInventoryForDate, selectedDate, updateDailyInventory, updateProduct, addProduct, deleteProduct } = useInventory();
-  const { hasPermission } = useAuth();
+  const { products, getInventoryForDate, selectedDate, updateDailyInventory, updateProduct, addProduct, deleteProduct, archiveProduct } = useInventory();
+  const { hasPermission, user } = useAuth();
   
   const [searchQuery, setSearchQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("Category:");
@@ -196,6 +198,15 @@ export function InventoryPage() {
   const [selectedForAction, setSelectedForAction] = useState<Set<string>>(new Set());
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isArchiveConfirmOpen, setIsArchiveConfirmOpen] = useState(false);
+  const [isSavingDrawer, setIsSavingDrawer] = useState(false);
+  const [isDeletingSelected, setIsDeletingSelected] = useState(false);
+  const [isArchivingSelected, setIsArchivingSelected] = useState(false);
+  const [isPasswordConfirmOpen, setIsPasswordConfirmOpen] = useState(false);
+  const [passwordConfirmActionLabel, setPasswordConfirmActionLabel] = useState("");
+  const [passwordConfirmValue, setPasswordConfirmValue] = useState("");
+  const [passwordConfirmError, setPasswordConfirmError] = useState("");
+  const [isPasswordConfirming, setIsPasswordConfirming] = useState(false);
+  const passwordConfirmResolverRef = useRef<((value: boolean) => void) | null>(null);
 
   const activeProducts = products.filter((p) => !p.archived);
   const inventory = getInventoryForDate(selectedDate);
@@ -276,16 +287,28 @@ export function InventoryPage() {
     setDrawerState("edit-mode");
   };
 
-  const handleSave = () => {
-    if (editedProduct && selectedProduct) {
-      updateProduct(selectedProduct.id, editedProduct);
+  const handleSave = async () => {
+    if (!selectedProduct || isSavingDrawer) return;
+    setIsSavingDrawer(true);
+    try {
+      let productOk = true;
+      let inventoryOk = true;
+
+      if (editedProduct) {
+        productOk = await updateProduct(selectedProduct.id, editedProduct);
+      }
+      if (editedInventory) {
+        inventoryOk = await updateDailyInventory(selectedDate, selectedProduct.id, editedInventory);
+      }
+
+      if (!productOk || !inventoryOk) return;
+
+      setDrawerState("item-view");
+      setSelectedProduct(editedProduct);
+      setSelectedInventory(editedInventory);
+    } finally {
+      setIsSavingDrawer(false);
     }
-    if (editedInventory && selectedProduct) {
-      updateDailyInventory(selectedDate, selectedProduct.id, editedInventory);
-    }
-    setDrawerState("item-view");
-    setSelectedProduct(editedProduct);
-    setSelectedInventory(editedInventory);
   };
 
   const handleCloseDrawer = () => {
@@ -319,17 +342,87 @@ export function InventoryPage() {
     setIsDeleteConfirmOpen(true);
   };
 
-  const handleConfirmDeleteSelected = () => {
+  const verifyCurrentAdminPassword = async (plainPassword: string): Promise<boolean> => {
+    if (!user?.id || !isSupabaseConfigured()) return false;
+    const supabase = getSupabase();
+
+    const { data: account, error } = await supabase
+      .from("user_accounts")
+      .select("password_hash")
+      .eq("profile_id", user.id)
+      .eq("is_active", true)
+      .single();
+
+    if (error || !account?.password_hash) return false;
+    return bcrypt.compare(plainPassword, account.password_hash);
+  };
+
+  const closePasswordPrompt = (result: boolean) => {
+    const resolver = passwordConfirmResolverRef.current;
+    passwordConfirmResolverRef.current = null;
+    setIsPasswordConfirmOpen(false);
+    setPasswordConfirmActionLabel("");
+    setPasswordConfirmValue("");
+    setPasswordConfirmError("");
+    if (resolver) resolver(result);
+  };
+
+  const requestAdminPasswordVerification = async (actionLabel: string): Promise<boolean> => {
+    if (user?.role !== "Admin") return true;
+    setPasswordConfirmActionLabel(actionLabel);
+    setPasswordConfirmValue("");
+    setPasswordConfirmError("");
+    setIsPasswordConfirmOpen(true);
+    return new Promise<boolean>((resolve) => {
+      passwordConfirmResolverRef.current = resolve;
+    });
+  };
+
+  const handlePasswordPromptCancel = () => {
+    if (isPasswordConfirming) return;
+    closePasswordPrompt(false);
+  };
+
+  const handlePasswordPromptConfirm = async () => {
+    if (isPasswordConfirming) return;
+    const entered = passwordConfirmValue.trim();
+    if (!entered) {
+      setPasswordConfirmError("Please enter your admin password.");
+      return;
+    }
+    setIsPasswordConfirming(true);
+    try {
+      const valid = await verifyCurrentAdminPassword(entered);
+      if (!valid) {
+        setPasswordConfirmError("Incorrect admin password.");
+        return;
+      }
+      closePasswordPrompt(true);
+    } finally {
+      setIsPasswordConfirming(false);
+    }
+  };
+
+  const handleConfirmDeleteSelected = async () => {
+    if (isDeletingSelected) return;
     const idsToDelete = Array.from(selectedForAction);
     if (idsToDelete.length === 0) return;
+    const valid = await requestAdminPasswordVerification("delete selected products");
+    if (!valid) return;
+    setIsDeletingSelected(true);
 
-    idsToDelete.forEach((id) => {
-      deleteProduct(id);
-    });
+    try {
+      const results = await Promise.all(idsToDelete.map((id) => deleteProduct(id)));
+      const successCount = results.filter(Boolean).length;
+      if (successCount === 0) return;
+      toast.success(`Deleted ${successCount} product${successCount > 1 ? "s" : ""}`);
 
-    setIsDeleteConfirmOpen(false);
-    setSelectedForAction(new Set());
-    setSelectionMode("none");
+      setIsDeleteConfirmOpen(false);
+      setSelectedForAction(new Set());
+      setSelectionMode("none");
+    } finally {
+      setIsDeletingSelected(false);
+    }
   };
 
   const handleArchiveSelected = () => {
@@ -337,18 +430,26 @@ export function InventoryPage() {
     setIsArchiveConfirmOpen(true);
   };
 
-  const handleConfirmArchiveSelected = () => {
+  const handleConfirmArchiveSelected = async () => {
+    if (isArchivingSelected) return;
     const idsToArchive = Array.from(selectedForAction);
     if (idsToArchive.length === 0) return;
+    const valid = await requestAdminPasswordVerification("archive selected products");
+    if (!valid) return;
+    setIsArchivingSelected(true);
 
-    idsToArchive.forEach((id) => {
-      updateProduct(id, { archived: true });
-    });
+    try {
+      const results = await Promise.all(idsToArchive.map((id) => archiveProduct(id)));
+      const successCount = results.filter(Boolean).length;
+      if (successCount === 0) return;
 
-    toast.success(`${idsToArchive.length} product${idsToArchive.length > 1 ? "s" : ""} archived`);
-    setIsArchiveConfirmOpen(false);
-    setSelectedForAction(new Set());
-    setSelectionMode("none");
+      toast.success(`${successCount} product${successCount > 1 ? "s" : ""} archived`);
+      setIsArchiveConfirmOpen(false);
+      setSelectedForAction(new Set());
+      setSelectionMode("none");
+    } finally {
+      setIsArchivingSelected(false);
+    }
   };
 
   const totalItems = inventory.reduce((sum, item) => sum + item.end, 0);
@@ -361,7 +462,7 @@ export function InventoryPage() {
       return item.end <= threshold;
     })
     .map(item => {
-      const product = products.find(p => p.id === item.productId);
+      const product = activeProducts.find(p => p.id === item.productId);
       return {
         product: product!,
         current: item.end,
@@ -699,6 +800,7 @@ export function InventoryPage() {
                 hasEditPermission={hasPermission("editProduct")}
                 hasAddItemPermission={hasPermission("addItem")}
                 hasDeleteItemPermission={hasPermission("deleteItem")}
+                isSaving={isSavingDrawer}
               />
             </motion.div>
           </>
@@ -729,6 +831,7 @@ export function InventoryPage() {
               type="button"
               variant="outline"
               className="rounded-xl"
+              disabled={isDeletingSelected}
               onClick={() => setIsDeleteConfirmOpen(false)}
             >
               Cancel
@@ -736,9 +839,10 @@ export function InventoryPage() {
             <Button
               type="button"
               className="rounded-xl bg-red-600 hover:bg-red-700"
+              disabled={isDeletingSelected}
               onClick={handleConfirmDeleteSelected}
             >
-              Yes, Delete
+              {isDeletingSelected ? "Deleting..." : "Yes, Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -760,6 +864,7 @@ export function InventoryPage() {
               type="button"
               variant="outline"
               className="rounded-xl"
+              disabled={isArchivingSelected}
               onClick={() => setIsArchiveConfirmOpen(false)}
             >
               Cancel
@@ -767,13 +872,28 @@ export function InventoryPage() {
             <Button
               type="button"
               className="rounded-xl bg-amber-600 hover:bg-amber-700"
+              disabled={isArchivingSelected}
               onClick={handleConfirmArchiveSelected}
             >
-              Yes, Archive
+              {isArchivingSelected ? "Archiving..." : "Yes, Archive"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AdminPasswordConfirmModal
+        open={isPasswordConfirmOpen}
+        actionLabel={passwordConfirmActionLabel}
+        password={passwordConfirmValue}
+        errorMessage={passwordConfirmError}
+        isSubmitting={isPasswordConfirming}
+        onPasswordChange={(value) => {
+          setPasswordConfirmValue(value);
+          setPasswordConfirmError("");
+        }}
+        onCancel={handlePasswordPromptCancel}
+        onConfirm={handlePasswordPromptConfirm}
+      />
     </div>
   );
 }
@@ -885,12 +1005,13 @@ interface RightDrawerContentProps {
   editedInventory: DailyInventory | null;
   onClose: () => void;
   onEdit: () => void;
-  onSave: () => void;
+  onSave: () => Promise<void> | void;
   onProductChange: (product: Product | null) => void;
   onInventoryChange: (inventory: DailyInventory | null) => void;
   hasEditPermission: boolean;
   hasAddItemPermission: boolean;
   hasDeleteItemPermission: boolean;
+  isSaving: boolean;
 }
 
 function RightDrawerContent({
@@ -907,6 +1028,7 @@ function RightDrawerContent({
   hasEditPermission,
   hasAddItemPermission,
   hasDeleteItemPermission,
+  isSaving,
 }: RightDrawerContentProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
@@ -1262,9 +1384,10 @@ function RightDrawerContent({
             </button>
             <button
               onClick={onSave}
+              disabled={isSaving}
               className="flex-1 py-3 bg-white text-gray-900 rounded-xl font-semibold hover:bg-gray-100 transition-all duration-200"
             >
-              SAVE
+              {isSaving ? "SAVING..." : "SAVE"}
             </button>
           </div>
         </div>
