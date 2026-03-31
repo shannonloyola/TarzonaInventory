@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { SquareArrowRight, SquareArrowLeft, ExternalLink, ChevronDown, X } from "lucide-react";
 import { useInventory } from "../context/inventory-context";
 import { format, getDaysInMonth, startOfMonth, getDay, parse, addMonths, subMonths, startOfDay, isBefore, isAfter, isValid } from "date-fns";
@@ -7,6 +7,16 @@ import { CurrentDateTime } from "../components/current-datetime";
 import { LowStockAlert } from "../components/low-stock-alert";
 
 type MetricType = "products" | "items" | "stockIn" | "stockOut" | null;
+type DashboardViewMode = "selected-date" | "monthly" | "yearly";
+
+type TrendItem = {
+  productId: string;
+  productName: string;
+  productSize: string;
+  totalStockOut: number;
+  movementDays: number;
+  lastMovementDate: Date | null;
+};
 
 function parseUiDate(value: string): Date | null {
   const trimmed = value.trim();
@@ -31,7 +41,7 @@ function parseUiDate(value: string): Date | null {
 }
 
 export function DashboardPage() {
-  const { products, getInventoryForDate, selectedDate, setSelectedDate } = useInventory();
+  const { products, inventorySheets, getInventoryForDate, selectedDate, setSelectedDate } = useInventory();
   
   // Parse selected date
   const parsedSelectedDate = parseUiDate(selectedDate) || new Date();
@@ -104,6 +114,7 @@ export function DashboardPage() {
   const [isViewAllOpen, setIsViewAllOpen] = useState(false);
   const [selectedMetric, setSelectedMetric] = useState<MetricType>(null);
   const [isExpandModalOpen, setIsExpandModalOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<DashboardViewMode>("selected-date");
 
   // Calculate low stock items (end <= 20% of beginning)
   const lowStockItems = currentInventory
@@ -123,6 +134,77 @@ export function DashboardPage() {
     })
     .filter(item => item.product); // Remove items where product wasn't found
 
+  const trendPeriodLabel = useMemo(() => {
+    if (viewMode === "monthly") return format(parsedSelectedDate, "MMMM yyyy");
+    if (viewMode === "yearly") return format(parsedSelectedDate, "yyyy");
+    return format(parsedSelectedDate, "MMMM d, yyyy");
+  }, [viewMode, selectedDate]);
+
+  const trendSummary = useMemo(() => {
+    const anchorDate = parseUiDate(selectedDate) || new Date();
+    const isInScope = (date: Date): boolean => {
+      if (viewMode === "monthly") {
+        return (
+          date.getFullYear() === anchorDate.getFullYear() &&
+          date.getMonth() === anchorDate.getMonth()
+        );
+      }
+      if (viewMode === "yearly") {
+        return date.getFullYear() === anchorDate.getFullYear();
+      }
+      return (
+        date.getFullYear() === anchorDate.getFullYear() &&
+        date.getMonth() === anchorDate.getMonth() &&
+        date.getDate() === anchorDate.getDate()
+      );
+    };
+
+    const byProduct = new Map<string, TrendItem>();
+    activeProducts.forEach((product) => {
+        byProduct.set(product.id, {
+          productId: product.id,
+          productName: product.name,
+          productSize: product.size,
+          totalStockOut: 0,
+          movementDays: 0,
+          lastMovementDate: null,
+        });
+    });
+
+    inventorySheets.forEach((sheet) => {
+      const parsedSheetDate = parseUiDate(sheet.date);
+      if (!parsedSheetDate || !isInScope(parsedSheetDate)) return;
+
+      sheet.items.forEach((item) => {
+        if (!activeProductIds.has(item.productId)) return;
+        const trendItem = byProduct.get(item.productId);
+        if (!trendItem) return;
+
+        const stockOut = Math.max(0, Number(item.out || 0));
+        trendItem.totalStockOut += stockOut;
+        if (stockOut > 0) {
+          trendItem.movementDays += 1;
+          if (!trendItem.lastMovementDate || parsedSheetDate > trendItem.lastMovementDate) {
+            trendItem.lastMovementDate = parsedSheetDate;
+          }
+        }
+      });
+    });
+
+    const all = Array.from(byProduct.values());
+    const fastMoving = all
+      .filter((item) => item.totalStockOut > 0)
+      .sort((a, b) => b.totalStockOut - a.totalStockOut || b.movementDays - a.movementDays)
+      .slice(0, 5);
+    const slowMoving = all
+      .filter((item) => item.totalStockOut > 0)
+      .sort((a, b) => a.totalStockOut - b.totalStockOut || a.movementDays - b.movementDays)
+      .slice(0, 5);
+    const nonMoving = all.filter((item) => item.totalStockOut === 0).slice(0, 5);
+
+    return { fastMoving, slowMoving, nonMoving };
+  }, [inventorySheets, activeProducts, selectedDate, viewMode]);
+
   // Get top products for overview panel
   const getTopProducts = () => {
     if (selectedMetric === "products") {
@@ -132,6 +214,7 @@ export function DashboardPage() {
           const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
+            size: product?.size || "",
             quantity: item.end
           };
         })
@@ -144,6 +227,7 @@ export function DashboardPage() {
           const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
+            size: product?.size || "",
             quantity: item.end
           };
         })
@@ -157,6 +241,7 @@ export function DashboardPage() {
           const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
+            size: product?.size || "",
             quantity: item.in
           };
         })
@@ -170,6 +255,7 @@ export function DashboardPage() {
           const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
+            size: product?.size || "",
             quantity: item.out
           };
         })
@@ -257,7 +343,7 @@ export function DashboardPage() {
         <LowStockAlert lowStockItems={lowStockItems} />
 
         {/* 3-Column Grid: 2 cols for metrics (2x2), 1 col for calendar */}
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-8">
           {/* Column 1 - Row 1: Total Products */}
           <MetricCard
             icon={<BottleGlassIcon />}
@@ -447,6 +533,69 @@ export function DashboardPage() {
             isActive={selectedMetric === "stockOut"}
           />
         </div>
+
+        {/* Stock Movement Trends */}
+        <div className="bg-white border border-gray-200 rounded-[16px] p-6 shadow-sm mb-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900">Stock Movement Trends</h2>
+              <p className="text-xs text-gray-500">Period: {trendPeriodLabel}</p>
+            </div>
+            <div className="inline-flex items-center rounded-xl border border-gray-200 bg-gray-50 p-1">
+              <button
+                type="button"
+                onClick={() => setViewMode("selected-date")}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+                  viewMode === "selected-date"
+                    ? "bg-white text-[#8B2E2E] shadow-sm"
+                    : "text-gray-600 hover:text-gray-800"
+                }`}
+              >
+                Selected Date
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("monthly")}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+                  viewMode === "monthly"
+                    ? "bg-white text-[#8B2E2E] shadow-sm"
+                    : "text-gray-600 hover:text-gray-800"
+                }`}
+              >
+                Monthly
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("yearly")}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+                  viewMode === "yearly"
+                    ? "bg-white text-[#8B2E2E] shadow-sm"
+                    : "text-gray-600 hover:text-gray-800"
+                }`}
+              >
+                Yearly
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <TrendList
+              title="Fast-moving"
+              rows={trendSummary.fastMoving}
+              emptyMessage="No stock-out movement for this period."
+            />
+            <TrendList
+              title="Slow-moving"
+              rows={trendSummary.slowMoving}
+              emptyMessage="No low-volume movers in this period."
+            />
+            <TrendList
+              title="Non-moving"
+              rows={trendSummary.nonMoving}
+              emptyMessage="All active items moved in this period."
+            />
+          </div>
+        </div>
       </div>
 
       {/* Overview Panel - slides in from right */}
@@ -490,7 +639,12 @@ export function DashboardPage() {
             <div className="space-y-3">
               {getTopProducts().map((product, index) => (
                 <div key={index} className="flex items-center justify-between py-3 border-b border-gray-700">
-                  <span className="text-sm text-gray-300">{product.name}</span>
+                  <div className="min-w-0">
+                    <p className="text-sm text-gray-300 truncate">{product.name}</p>
+                    {selectedMetric === "stockOut" && product.size ? (
+                      <p className="text-[11px] text-gray-500 truncate">{product.size}</p>
+                    ) : null}
+                  </div>
                   <span className="text-base font-semibold">{product.quantity}</span>
                 </div>
               ))}
@@ -561,21 +715,31 @@ export function DashboardPage() {
             <DialogDescription>View detailed stock movements for the selected date.</DialogDescription>
           </DialogHeader>
           <div className="max-h-[60vh] overflow-y-auto">
-            <table className="w-full">
+            <table className="w-full table-fixed">
+              <colgroup>
+                <col style={{ width: "30%" }} />
+                <col style={{ width: "12%" }} />
+                <col style={{ width: "21%" }} />
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "10%" }} />
+              </colgroup>
               <thead className="bg-gray-50 sticky top-0">
                 <tr>
-                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-600">Product</th>
-                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-600">Category</th>
-                  <th className="text-right py-2 px-3 text-xs font-semibold text-gray-600">Beg</th>
-                  <th className="text-right py-2 px-3 text-xs font-semibold text-gray-600 text-green-600">In</th>
-                  <th className="text-right py-2 px-3 text-xs font-semibold text-gray-600 text-red-600">Out</th>
-                  <th className="text-right py-2 px-3 text-xs font-semibold text-gray-600">End</th>
+                  <th className="text-left py-2.5 px-4 text-xs font-semibold text-gray-600">Product</th>
+                  <th className="text-left py-2.5 px-4 text-xs font-semibold text-gray-600">Size</th>
+                  <th className="text-left py-2.5 px-4 text-xs font-semibold text-gray-600">Category</th>
+                  <th className="text-right py-2 px-2 text-xs font-semibold text-gray-600">Beg</th>
+                  <th className="text-right py-2 px-2 text-xs font-semibold text-gray-600 text-green-600">In</th>
+                  <th className="text-right py-2 px-2 text-xs font-semibold text-gray-600 text-red-600">Out</th>
+                  <th className="text-right py-2 px-2 text-xs font-semibold text-gray-600">End</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {currentInventory.filter(i => i.in > 0 || i.out > 0).length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-8 text-center text-sm text-gray-500">No stock movements for this date.</td>
+                    <td colSpan={7} className="py-8 text-center text-sm text-gray-500">No stock movements for this date.</td>
                   </tr>
                 ) : (
                   currentInventory
@@ -585,12 +749,13 @@ export function DashboardPage() {
                     const product = activeProducts.find(p => p.id === item.productId);
                     return (
                       <tr key={item.productId}>
-                        <td className="py-2 px-3 text-sm">{product?.name || "Unknown"}</td>
-                        <td className="py-2 px-3 text-sm text-gray-500">{product?.category}</td>
-                        <td className="py-2 px-3 text-sm text-right">{item.beg}</td>
-                        <td className="py-2 px-3 text-sm text-right text-green-600">{item.in > 0 ? `+${item.in}` : "-"}</td>
-                        <td className="py-2 px-3 text-sm text-right text-red-600">{item.out > 0 ? `-${item.out}` : "-"}</td>
-                        <td className="py-2 px-3 text-sm text-right font-medium">{item.end}</td>
+                        <td className="py-2.5 px-4 text-sm font-medium text-gray-900">{product?.name || "Unknown"}</td>
+                        <td className="py-2.5 px-4 text-sm text-gray-600 whitespace-nowrap">{product?.size || "-"}</td>
+                        <td className="py-2.5 px-4 text-sm text-gray-500 break-words">{product?.category}</td>
+                        <td className="py-2 px-2 text-sm text-right">{item.beg}</td>
+                        <td className="py-2 px-2 text-sm text-right text-green-600">{item.in > 0 ? `+${item.in}` : "-"}</td>
+                        <td className="py-2 px-2 text-sm text-right text-red-600">{item.out > 0 ? `-${item.out}` : "-"}</td>
+                        <td className="py-2 px-2 text-sm text-right font-medium">{item.end}</td>
                       </tr>
                     );
                   })
@@ -722,5 +887,39 @@ function TwoBottlesIcon() {
         strokeLinejoin="round"
       />
     </svg>
+  );
+}
+
+interface TrendListProps {
+  title: string;
+  rows: TrendItem[];
+  emptyMessage: string;
+}
+
+function TrendList({ title, rows, emptyMessage }: TrendListProps) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-3">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-600 mb-2">{title}</h3>
+      {rows.length === 0 ? (
+        <p className="text-xs text-gray-500">{emptyMessage}</p>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((row) => (
+            <div key={row.productId} className="rounded-lg bg-white border border-gray-100 px-3 py-2">
+              <p className="text-sm font-medium text-gray-900 leading-tight">{row.productName}</p>
+              <p className="text-[11px] text-gray-500 mt-0.5">{row.productSize}</p>
+              <p className="text-xs text-gray-600 mt-1">
+                Out: <span className="font-semibold text-gray-800">{row.totalStockOut}</span>
+                {" • "}
+                Days: <span className="font-semibold text-gray-800">{row.movementDays}</span>
+                {row.lastMovementDate
+                  ? ` • Last: ${format(row.lastMovementDate, "MMM d, yyyy")}`
+                  : ""}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
