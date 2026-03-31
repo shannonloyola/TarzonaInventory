@@ -509,7 +509,7 @@ export function InventoryPage() {
         <div className={isHeaderCompact ? "mb-5" : "mb-8"}>
           {isHeaderCompact && <div className="h-[56px]" aria-hidden="true" />}
           <div
-            className={`transition-all duration-200 ${
+            className={`${isHeaderCompact ? "transition-all duration-200" : "transition-none"} ${
               isHeaderCompact
                 ? `fixed top-0 left-16 z-40 px-4 sm:px-6 lg:px-8 py-2 border-b border-gray-200 bg-gray-50/95 backdrop-blur supports-[backdrop-filter]:bg-gray-50/85 ${
                     drawerState ? "right-0 xl:right-80" : "right-0"
