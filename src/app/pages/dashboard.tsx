@@ -35,6 +35,7 @@ export function DashboardPage() {
   
   // Parse selected date
   const parsedSelectedDate = parseUiDate(selectedDate) || new Date();
+  const selectedDateLabel = format(parsedSelectedDate, "MMMM d, yyyy");
   
   // State for calendar navigation
   const [calendarMonth, setCalendarMonth] = useState(parsedSelectedDate);
@@ -241,9 +242,15 @@ export function DashboardPage() {
         }`}
       >
         {/* Header with Date/Time */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-8">
           <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          {!selectedMetric && <CurrentDateTime className="text-xs text-gray-500" />}
+          <div className="flex items-center gap-3 ml-auto">
+            <div className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 shadow-sm">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Date Selected</span>
+              <span className="text-sm font-semibold text-[#8B2E2E]">{selectedDateLabel}</span>
+            </div>
+            {!selectedMetric && <CurrentDateTime />}
+          </div>
         </div>
 
         {/* Low Stock Alert */}

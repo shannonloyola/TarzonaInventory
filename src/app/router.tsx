@@ -1,4 +1,4 @@
-import { createBrowserRouter, Navigate } from "react-router";
+import { createBrowserRouter, Navigate, redirect } from "react-router";
 import { Sidebar } from "./components/layout/sidebar";
 import { LoginPage } from "./pages/login";
 import { DashboardPage } from "./pages/dashboard";
@@ -9,6 +9,27 @@ import { HashGenerator } from "./pages/hash-generator";
 import { LoginDiagnostic } from "./pages/login-diagnostic";
 import { ResetPasswordPage } from "./pages/reset-password";
 import { RouteAccessGate } from "./components/security/route-access-gate";
+import { getSession } from "../lib/db-utils";
+
+const LAST_PROTECTED_ROUTE_KEY = "tarzona_last_protected_route";
+
+function isSafeProtectedRoute(path: string): boolean {
+  if (!path) return false;
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  let pathname = normalized;
+  try {
+    pathname = new URL(normalized, "http://local").pathname;
+  } catch {
+    pathname = normalized.split("?")[0].split("#")[0];
+  }
+  return (
+    pathname === "/dashboard" ||
+    pathname === "/inventory" ||
+    pathname === "/activity-log" ||
+    pathname === "/settings" ||
+    pathname.startsWith("/settings/")
+  );
+}
 
 // Protected Route Wrapper
 function ProtectedRoute({
@@ -26,6 +47,24 @@ function ProtectedRoute({
   );
 }
 
+async function requireLegacySession({ request }: { request: Request }) {
+  const session = getSession();
+  if (session) return null;
+
+  const url = new URL(request.url);
+  const requestedPath = `${url.pathname}${url.search || ""}`;
+  throw redirect(`/login?redirect=${encodeURIComponent(requestedPath)}`);
+}
+
+async function redirectAuthenticatedFromLogin() {
+  const session = getSession();
+  if (!session) return null;
+
+  const remembered = localStorage.getItem(LAST_PROTECTED_ROUTE_KEY) || "";
+  const safeTarget = isSafeProtectedRoute(remembered) ? remembered : "/dashboard";
+  throw redirect(safeTarget);
+}
+
 export const router = createBrowserRouter([
   {
     path: "/",
@@ -33,6 +72,7 @@ export const router = createBrowserRouter([
   },
   {
     path: "/login",
+    loader: redirectAuthenticatedFromLogin,
     element: <LoginPage />,
   },
   {
@@ -49,6 +89,7 @@ export const router = createBrowserRouter([
   },
   {
     path: "/dashboard",
+    loader: requireLegacySession,
     element: (
       <ProtectedRoute>
         <DashboardPage />
@@ -57,6 +98,7 @@ export const router = createBrowserRouter([
   },
   {
     path: "/inventory",
+    loader: requireLegacySession,
     element: (
       <ProtectedRoute>
         <InventoryPage />
@@ -65,6 +107,7 @@ export const router = createBrowserRouter([
   },
   {
     path: "/activity-log",
+    loader: requireLegacySession,
     element: (
       <ProtectedRoute>
         <ActivityLogPage />
@@ -73,6 +116,7 @@ export const router = createBrowserRouter([
   },
   {
     path: "/settings",
+    loader: requireLegacySession,
     element: (
       <ProtectedRoute>
         <SettingsLayout />

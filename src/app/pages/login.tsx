@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { useAuth } from "../context/auth-context";
 import { Role } from "../types";
 import { toast } from "sonner";
@@ -16,6 +16,7 @@ export function LoginPage() {
   const [showDevSetup, setShowDevSetup] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const showDevSetupButton =
     (import.meta.env.VITE_ENABLE_DEV_SETUP as string | undefined) === "true";
 
@@ -26,7 +27,15 @@ export function LoginPage() {
     try {
       const success = await login(username, password, role);
       if (success) {
-        navigate("/dashboard");
+        const routeState = location.state as { from?: string } | null;
+        const redirectFromQuery = new URLSearchParams(location.search).get("redirect");
+        const redirectTo =
+          routeState?.from && routeState.from !== "/login"
+            ? routeState.from
+            : redirectFromQuery && redirectFromQuery !== "/login"
+              ? redirectFromQuery
+            : "/dashboard";
+        navigate(redirectTo, { replace: true });
       } else {
         toast.error("Invalid credentials");
       }

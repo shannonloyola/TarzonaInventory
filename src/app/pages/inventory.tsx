@@ -210,6 +210,10 @@ export function InventoryPage() {
 
   const activeProducts = products.filter((p) => !p.archived);
   const inventory = getInventoryForDate(selectedDate);
+  const selectedDateLabel = (() => {
+    const parsed = parseUiDate(selectedDate);
+    return parsed ? format(parsed, "MMMM d, yyyy") : selectedDate;
+  })();
 
   const getPreviousDayEndStock = (productId: string): number => {
     const parsedSelectedDate = parseUiDate(selectedDate);
@@ -481,9 +485,15 @@ export function InventoryPage() {
         }`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-8">
           <h1 className="text-2xl font-bold text-gray-900">Inventory</h1>
-          <CurrentDateTime className="text-xs text-gray-500" />
+          <div className="flex items-center gap-3 ml-auto">
+            <div className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 shadow-sm">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Date Selected</span>
+              <span className="text-sm font-semibold text-[#8B2E2E]">{selectedDateLabel}</span>
+            </div>
+            <CurrentDateTime />
+          </div>
         </div>
 
         {/* Low Stock Alert */}

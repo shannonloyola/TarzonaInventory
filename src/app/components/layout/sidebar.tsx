@@ -23,7 +23,15 @@ export function Sidebar() {
     <div className="w-16 bg-white border-r border-gray-200 flex flex-col items-center py-6 fixed left-0 top-0 h-screen">
       {/* Logo */}
       <div className="mb-8">
-        <img src={logoImg} alt="TARZONA" className="w-10 h-10 object-contain" />
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="rounded-lg focus:outline-none focus:ring-2 focus:ring-[#8B2E2E]/30"
+          title="Reload current page"
+          aria-label="Reload current page"
+        >
+          <img src={logoImg} alt="TARZONA" className="w-10 h-10 object-contain" />
+        </button>
       </div>
 
       {/* Navigation Icons */}

@@ -59,6 +59,7 @@ export interface ActivityLog {
 
 export interface AuthContextType {
   user: User | null;
+  isAuthReady: boolean;
   login: (username: string, password: string, selectedRole: Role) => Promise<boolean>;
   logout: () => void;
   isAdmin: boolean;

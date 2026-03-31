@@ -38,25 +38,58 @@ function normalizeStaffPermissions(perms: StaffPermissionRow | null | undefined)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const security = getSecurityConfig();
 
   // Restore session on mount
   useEffect(() => {
-    const run = async () => {
-      if (security.authProviderMode === "legacy") {
-        const session = getSession();
-        if (session) {
-          // Restore user from session
-          await loadUserFromSession(session);
-        }
-        return;
-      }
+    let disposed = false;
 
-      // Supabase Auth mode scaffold only. Cutover remains disabled by default.
-      await restoreFromSupabaseAuthSession();
+    const run = async () => {
+      try {
+        if (security.authProviderMode === "legacy") {
+          const session = getSession();
+          if (session) {
+            // Restore user from session
+            await loadUserFromSession(session);
+          }
+          return;
+        }
+
+        // Supabase Auth mode scaffold only. Cutover remains disabled by default.
+        await restoreFromSupabaseAuthSession();
+      } finally {
+        if (!disposed) setIsAuthReady(true);
+      }
     };
 
     void run();
+
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  // Keep auth state synchronized across tabs when session storage changes.
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== "tarzona_session") return;
+
+      if (!event.newValue) {
+        setUser(null);
+        return;
+      }
+
+      try {
+        const nextSession = JSON.parse(event.newValue) as SessionData;
+        void loadUserFromSession(nextSession);
+      } catch {
+        setUser(null);
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
   }, []);
 
   const restoreFromSupabaseAuthSession = async (): Promise<User | null> => {
@@ -294,7 +327,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, login, logout, isAdmin, hasPermission, updateUserLocal }}
+      value={{ user, isAuthReady, login, logout, isAdmin, hasPermission, updateUserLocal }}
     >
       {children}
     </AuthContext.Provider>
