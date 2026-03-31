@@ -354,7 +354,7 @@ async function fetchAllInventorySnapshots(): Promise<SnapshotRow[]> {
 }
 
 export function InventoryProvider({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
+  const { user, isAuthReady } = useAuth();
   const [products, setProducts] = useState<Product[]>(() =>
     isSupabaseConfigured() ? [] : mockProducts
   );
@@ -413,6 +413,14 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       setActivityLogs(mockActivityLogs);
     }
   }, [supabaseConfigured]);
+
+  // Reset selected date to today only after auth is confirmed logged out.
+  useEffect(() => {
+    if (!isAuthReady || user) return;
+    const today = todayUiDate();
+    setSelectedDateState(today);
+    localStorage.setItem(selectedDateStorageKey, today);
+  }, [isAuthReady, user?.id]);
 
   useEffect(() => {
     const loadFromSupabase = async () => {
