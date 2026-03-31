@@ -12,6 +12,8 @@ import { RouteAccessGate } from "./components/security/route-access-gate";
 import { getSession } from "../lib/db-utils";
 
 const LAST_PROTECTED_ROUTE_KEY = "tarzona_last_protected_route";
+const PENDING_LOGIN_REDIRECT_KEY = "tarzona_pending_login_redirect";
+const SUPPRESS_NEXT_PROTECTED_REDIRECT_KEY = "suppressNextProtectedRedirect";
 
 function isSafeProtectedRoute(path: string): boolean {
   if (!path) return false;
@@ -51,8 +53,23 @@ async function requireLegacySession({ request }: { request: Request }) {
   const session = getSession();
   if (session) return null;
 
+  const suppressNextProtectedRedirect =
+    sessionStorage.getItem(SUPPRESS_NEXT_PROTECTED_REDIRECT_KEY) === "1";
+  if (suppressNextProtectedRedirect) {
+    sessionStorage.removeItem(SUPPRESS_NEXT_PROTECTED_REDIRECT_KEY);
+    sessionStorage.removeItem(PENDING_LOGIN_REDIRECT_KEY);
+    throw redirect("/login");
+  }
+
   const url = new URL(request.url);
   const requestedPath = `${url.pathname}${url.search || ""}`;
+  if (isSafeProtectedRoute(requestedPath)) {
+    try {
+      sessionStorage.setItem(PENDING_LOGIN_REDIRECT_KEY, requestedPath);
+    } catch {
+      // noop
+    }
+  }
   throw redirect(`/login?redirect=${encodeURIComponent(requestedPath)}`);
 }
 

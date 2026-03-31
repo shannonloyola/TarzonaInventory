@@ -16,6 +16,7 @@ export interface StaffPermissions {
   editProduct: boolean;
   deleteProduct: boolean;
   archiveProduct: boolean;
+  exportData: boolean;
   addItem: boolean;
   deleteItem: boolean;
 }
@@ -81,7 +82,12 @@ export interface InventoryContextType {
   archiveProduct: (id: string) => Promise<boolean>;
   archiveAllProducts: () => Promise<boolean>;
   deleteAllProducts: () => Promise<boolean>;
-  exportData: (targetDates?: string[]) => void;
+  exportData: (options?: string[] | {
+    targetDates?: string[];
+    rangeStart?: string;
+    rangeEnd?: string;
+    mode?: "all_active_products" | "movement_only";
+  }) => void;
   setSelectedDate: (date: string) => void;
   logActivity: (activity: string, productId?: string, productName?: string) => void;
 }

@@ -7,6 +7,28 @@ import { Settings, ChevronDown } from "lucide-react";
 import { AdminDevSetupModal } from "../components/admin-dev-setup-modal";
 import logoImg from "../../assets/23cc4f10c8c227246e4dd99a2116314104e701d4.png";
 
+const PENDING_LOGIN_REDIRECT_KEY = "tarzona_pending_login_redirect";
+const LOGOUT_LANDING_MODE_KEY = "logoutLandingMode";
+const SUPPRESS_NEXT_PROTECTED_REDIRECT_KEY = "suppressNextProtectedRedirect";
+
+function isSafeProtectedRoute(path: string): boolean {
+  if (!path) return false;
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  let pathname = normalized;
+  try {
+    pathname = new URL(normalized, "http://local").pathname;
+  } catch {
+    pathname = normalized.split("?")[0].split("#")[0];
+  }
+  return (
+    pathname === "/dashboard" ||
+    pathname === "/inventory" ||
+    pathname === "/activity-log" ||
+    pathname === "/settings" ||
+    pathname.startsWith("/settings/")
+  );
+}
+
 export function LoginPage() {
   const [role, setRole] = useState<Role>("Admin");
   const [username, setUsername] = useState("");
@@ -28,13 +50,29 @@ export function LoginPage() {
       const success = await login(username, password, role);
       if (success) {
         const routeState = location.state as { from?: string } | null;
-        const redirectFromQuery = new URLSearchParams(location.search).get("redirect");
-        const redirectTo =
-          routeState?.from && routeState.from !== "/login"
+        const redirectFromState =
+          typeof routeState?.from === "string" && routeState.from !== "/login" && isSafeProtectedRoute(routeState.from)
             ? routeState.from
-            : redirectFromQuery && redirectFromQuery !== "/login"
+            : "";
+        const redirectFromQueryRaw = new URLSearchParams(location.search).get("redirect") || "";
+        const redirectFromQuery =
+          redirectFromQueryRaw !== "/login" && isSafeProtectedRoute(redirectFromQueryRaw)
+            ? redirectFromQueryRaw
+            : "";
+        const logoutLandingMode = sessionStorage.getItem(LOGOUT_LANDING_MODE_KEY);
+        const redirectTo =
+          redirectFromState
+            ? redirectFromState
+            : redirectFromQuery
               ? redirectFromQuery
-            : "/dashboard";
+              : logoutLandingMode === "dashboard"
+                ? "/dashboard"
+                : "/dashboard";
+        if (logoutLandingMode === "dashboard") {
+          sessionStorage.removeItem(LOGOUT_LANDING_MODE_KEY);
+        }
+        sessionStorage.removeItem(PENDING_LOGIN_REDIRECT_KEY);
+        sessionStorage.removeItem(SUPPRESS_NEXT_PROTECTED_REDIRECT_KEY);
         navigate(redirectTo, { replace: true });
       } else {
         toast.error("Invalid credentials");

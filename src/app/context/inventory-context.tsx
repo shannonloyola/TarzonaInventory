@@ -107,6 +107,24 @@ function toDbDate(uiDate: string): string {
   return format(parsed, dbDateFormat);
 }
 
+function enumerateInclusiveDbDates(startDbDate: string, endDbDate: string): string[] {
+  const start = parse(startDbDate, dbDateFormat, new Date());
+  const end = parse(endDbDate, dbDateFormat, new Date());
+  if (!isValid(start) || !isValid(end)) return [];
+
+  const from = start <= end ? start : end;
+  const to = start <= end ? end : start;
+  const cursor = new Date(from);
+  const values: string[] = [];
+
+  while (cursor.getTime() <= to.getTime()) {
+    values.push(format(cursor, dbDateFormat));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return values;
+}
+
 function isFutureUiDate(value: string): boolean {
   const parsed = parseFlexibleUiDate(value);
   if (!parsed) return false;
@@ -1156,22 +1174,30 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
 
     setInventorySheets((prev) => upsertLocalInventorySheet(prev, date, next));
 
+    const beforeBeg = existing?.beg || 0;
+    const beforeIn = existing?.in || 0;
+    const beforeOut = existing?.out || 0;
+    const changedBeg = next.beg !== beforeBeg;
+    const changedIn = next.in !== beforeIn;
+    const changedOut = next.out !== beforeOut;
+    const changedCount = Number(changedBeg) + Number(changedIn) + Number(changedOut);
+
     let activityStr = `Updated inventory for ${product.name || "Unknown"}`;
     let txnType: TransactionType = "edit_product";
     let qtyDelta: number | undefined = undefined;
 
-    if (updates.in !== undefined) {
+    if (changedCount === 1 && changedIn) {
       activityStr = `Updated stock IN for ${product.name || "Unknown"}`;
       txnType = "stock_in";
-      qtyDelta = next.in - (existing?.in || 0);
-    } else if (updates.out !== undefined) {
+      qtyDelta = next.in - beforeIn;
+    } else if (changedCount === 1 && changedOut) {
       activityStr = `Updated stock OUT for ${product.name || "Unknown"}`;
       txnType = "stock_out";
-      qtyDelta = next.out - (existing?.out || 0);
-    } else if (updates.beg !== undefined) {
+      qtyDelta = next.out - beforeOut;
+    } else if (changedCount === 1 && changedBeg) {
       activityStr = `Updated beginning inventory for ${product.name || "Unknown"}`;
       txnType = "beginning_set";
-      qtyDelta = next.beg - (existing?.beg || 0);
+      qtyDelta = next.beg - beforeBeg;
     }
 
     pushLocalActivity(activityStr, productId, product.name);
@@ -1300,14 +1326,54 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     setProducts([]);
     setInventorySheets([]);
     pushLocalActivity("Deleted all products");
-    await persistDbActivity("delete_product", "Deleted all products");
+    await persistDbActivity("delete_all", "Deleted all products");
     toast.success("All products deleted successfully");
     return true;
   };
 
-  const exportData = (targetDates?: string[]) => {
-    const requestedDates = (targetDates || []).filter((d) => d && d.trim().length > 0);
-    const exportDates = requestedDates.length > 0 ? requestedDates : [selectedDate];
+  const exportData = (
+    options?:
+      | string[]
+      | {
+          targetDates?: string[];
+          rangeStart?: string;
+          rangeEnd?: string;
+          mode?: "all_active_products" | "movement_only";
+        }
+  ) => {
+    const exportMode =
+      typeof options === "object" && options !== null && !Array.isArray(options)
+        ? options.mode || "all_active_products"
+        : "all_active_products";
+    const requestedDatesRaw =
+      Array.isArray(options)
+        ? options
+        : (options?.targetDates || []);
+
+    const normalizedRequestedDates = requestedDatesRaw
+      .map((d) => toDbDate(d) || d)
+      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+
+    const rangeStartDb =
+      typeof options === "object" && options !== null && !Array.isArray(options)
+        ? toDbDate(options.rangeStart || "") || options.rangeStart || ""
+        : "";
+    const rangeEndDb =
+      typeof options === "object" && options !== null && !Array.isArray(options)
+        ? toDbDate(options.rangeEnd || "") || options.rangeEnd || ""
+        : "";
+
+    const rangeDates =
+      rangeStartDb && rangeEndDb
+        ? enumerateInclusiveDbDates(rangeStartDb, rangeEndDb)
+        : [];
+    const exportDbDates =
+      rangeDates.length > 0
+        ? rangeDates
+        : normalizedRequestedDates.length > 0
+        ? normalizedRequestedDates
+        : [toDbDate(selectedDate) || format(new Date(), dbDateFormat)];
+    const exportDates = exportDbDates.map((dbDate) => toUiDate(dbDate));
 
     const headers = [
       "Name",
@@ -1358,8 +1424,16 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         const inventoryForDate = getInventoryForDate(exportDate);
         const inventoryByProductId = new Map(inventoryForDate.map((item) => [item.productId, item]));
         const sheetName = buildSheetName(exportDate);
+        const activeProducts = products.filter((product) => !product.archived);
+        const sheetProducts =
+          exportMode === "movement_only"
+            ? activeProducts.filter((product) => {
+                const inv = inventoryByProductId.get(product.id);
+                return !!inv && (inv.in > 0 || inv.out > 0);
+              })
+            : activeProducts;
 
-        const dataRows = products.map((product) => {
+        const dataRows = sheetProducts.map((product) => {
           const inv = inventoryByProductId.get(product.id);
           return buildRow([
             product.name,
@@ -1396,9 +1470,10 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     a.click();
     URL.revokeObjectURL(url);
 
-    const exportedDateLabels = exportDates.map((d) => toDbDate(d) || d).join(", ");
-    pushLocalActivity(`Exported inventory data for ${exportedDateLabels}`);
-    void persistDbActivity("export", `Exported inventory data for ${exportedDateLabels}`);
+    const exportedDateLabels = exportDbDates.join(", ");
+    const modeLabel = exportMode === "movement_only" ? "Movement Only" : "All Active Products";
+    pushLocalActivity(`Exported inventory data (${modeLabel}) for ${exportedDateLabels}`);
+    void persistDbActivity("export", `Exported inventory data (${modeLabel}) for ${exportedDateLabels}`);
     toast.success(`Data exported successfully (${exportDates.length} sheet${exportDates.length > 1 ? "s" : ""})`);
   };
 

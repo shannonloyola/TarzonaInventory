@@ -3,6 +3,7 @@ import { useAuth } from "../../context/auth-context";
 import { toast } from "sonner";
 import { getSupabase, isSupabaseConfigured } from "../../../lib/supabase";
 import bcrypt from "bcryptjs";
+import { formatDateForDB, logActivity as logDbActivity } from "../../../lib/db-utils";
 
 type EditableField = "Name" | "Email" | "Username";
 
@@ -123,6 +124,17 @@ export function ProfilePage() {
         if (editingField === "Email") updateUserLocal({ email: nextValue.toLowerCase() });
         if (editingField === "Username") updateUserLocal({ username: nextValue });
 
+        await logDbActivity({
+          snapshot_date: formatDateForDB(new Date()),
+          actor_profile_id: user.id,
+          actor_username: user.username,
+          actor_role: user.role.toLowerCase(),
+          txn_type: "profile_edit",
+          note: `Updated profile field: ${editingField}`,
+          product_id: null,
+          product_name: null,
+        });
+
         toast.success(`${editingField} updated successfully.`);
         handleCancel();
       } catch (err) {
@@ -189,6 +201,17 @@ export function ProfilePage() {
           .eq("is_active", true);
 
         if (updateError) throw updateError;
+
+        await logDbActivity({
+          snapshot_date: formatDateForDB(new Date()),
+          actor_profile_id: user.id,
+          actor_username: user.username,
+          actor_role: user.role.toLowerCase(),
+          txn_type: "profile_edit",
+          note: "Changed account password",
+          product_id: null,
+          product_name: null,
+        });
 
         toast.success("Password changed successfully.");
         setShowChangePasswordModal(false);

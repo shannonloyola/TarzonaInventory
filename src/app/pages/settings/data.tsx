@@ -19,7 +19,7 @@ export function DataManagementPage() {
     deleteAllProducts,
     exportData,
   } = useInventory();
-  const { user } = useAuth();
+  const { user, isAdmin, hasPermission } = useAuth();
   const [showArchivedModal, setShowArchivedModal] = useState(false);
   const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
   const [showArchiveAllModal, setShowArchiveAllModal] = useState(false);
@@ -32,11 +32,17 @@ export function DataManagementPage() {
   const [passwordConfirmError, setPasswordConfirmError] = useState("");
   const [isPasswordConfirming, setIsPasswordConfirming] = useState(false);
   const passwordConfirmResolverRef = useRef<((value: boolean) => void) | null>(null);
-  const [exportDateInput, setExportDateInput] = useState<string>(() => {
+  const [exportDateMode, setExportDateMode] = useState<"single" | "range">("single");
+  const [singleExportDate, setSingleExportDate] = useState<string>(() => {
     const parsed = parse(selectedDate, "M-d-yy", new Date());
     return isValid(parsed) ? format(parsed, "yyyy-MM-dd") : format(new Date(), "yyyy-MM-dd");
   });
-  const [selectedExportDates, setSelectedExportDates] = useState<string[]>([]);
+  const [rangeStartDate, setRangeStartDate] = useState<string>(() => format(new Date(), "yyyy-MM-dd"));
+  const [rangeEndDate, setRangeEndDate] = useState<string>(() => format(new Date(), "yyyy-MM-dd"));
+  const [exportProductMode, setExportProductMode] = useState<"all_active_products" | "movement_only">("all_active_products");
+
+  const canExportData = isAdmin || hasPermission("exportData");
+  const canManageArchived = isAdmin || hasPermission("archiveProduct");
 
   const archivedProducts = products.filter((product) => product.archived);
 
@@ -103,6 +109,10 @@ export function DataManagementPage() {
   };
 
   const handleArchiveAll = () => {
+    if (!isAdmin) {
+      toast.error("Only Admin can archive all products.");
+      return;
+    }
     setShowArchiveAllModal(true);
     setAdminPassword("");
     setPasswordError("");
@@ -132,6 +142,10 @@ export function DataManagementPage() {
   };
 
   const handleDeleteAll = () => {
+    if (!isAdmin) {
+      toast.error("Only Admin can delete all products.");
+      return;
+    }
     setShowDeleteAllModal(true);
     setAdminPassword("");
     setPasswordError("");
@@ -161,6 +175,10 @@ export function DataManagementPage() {
 
   const handleRestoreArchivedProduct = (productId: string, productName: string) => {
     const run = async () => {
+      if (!canManageArchived) {
+        toast.error("You do not have permission to manage archived products.");
+        return;
+      }
       if (isProcessing) return;
       const valid = await requestAdminPasswordVerification(`restore ${productName}`);
       if (!valid) return;
@@ -178,6 +196,10 @@ export function DataManagementPage() {
 
   const handleDeleteArchivedProduct = (productId: string, productName: string) => {
     const run = async () => {
+      if (!canManageArchived) {
+        toast.error("You do not have permission to manage archived products.");
+        return;
+      }
       if (isProcessing) return;
       const valid = await requestAdminPasswordVerification(`delete ${productName}`);
       if (!valid) return;
@@ -195,6 +217,10 @@ export function DataManagementPage() {
 
   const handleRestoreAllArchivedProducts = () => {
     const run = async () => {
+      if (!canManageArchived) {
+        toast.error("You do not have permission to manage archived products.");
+        return;
+      }
       if (archivedProducts.length === 0 || isProcessing) return;
       const valid = await requestAdminPasswordVerification("restore all archived products");
       if (!valid) return;
@@ -213,127 +239,177 @@ export function DataManagementPage() {
     void run();
   };
 
-  const handleAddExportDate = () => {
-    if (!exportDateInput) return;
-    setSelectedExportDates((prev) => {
-      if (prev.includes(exportDateInput)) return prev;
-      return [...prev, exportDateInput];
-    });
-  };
-
-  const handleRemoveExportDate = (dateValue: string) => {
-    setSelectedExportDates((prev) => prev.filter((date) => date !== dateValue));
-  };
-
   const handleExportByDate = () => {
-    if (selectedExportDates.length === 0) {
-      toast.error("Please add at least one date before exporting.");
+    if (!canExportData) {
+      toast.error("You do not have permission to export data.");
       return;
     }
-    exportData(selectedExportDates);
+
+    if (exportDateMode === "single") {
+      if (!singleExportDate) {
+        toast.error("Please select a date before exporting.");
+        return;
+      }
+      exportData({
+        targetDates: [singleExportDate],
+        mode: exportProductMode,
+      });
+      return;
+    }
+
+    if (!rangeStartDate || !rangeEndDate) {
+      toast.error("Please select a valid date range before exporting.");
+      return;
+    }
+    exportData({
+      rangeStart: rangeStartDate,
+      rangeEnd: rangeEndDate,
+      mode: exportProductMode,
+    });
   };
 
   return (
     <div>
       <h2 className="text-2xl font-bold text-gray-900 mb-8">Data Controls</h2>
 
-      <div className="bg-white border border-gray-200 rounded-[16px] divide-y divide-gray-200 shadow-sm">
-        {/* Archived Products */}
-        <div className="p-6 flex items-center justify-between">
-          <div>
-            <h3 className="font-medium text-gray-900 text-sm">
-              Archived Products
-            </h3>
-          </div>
-          <button
-            onClick={() => setShowArchivedModal(true)}
-            className="px-5 py-2 border border-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors duration-200"
-          >
-            Manage
-          </button>
+      {!canManageArchived && !canExportData ? (
+        <div className="bg-white border border-gray-200 rounded-[16px] p-6 text-sm text-gray-600 shadow-sm">
+          No data control permissions were granted to your account.
         </div>
+      ) : null}
+
+      {(canManageArchived || canExportData) && (
+        <div className="bg-white border border-gray-200 rounded-[16px] divide-y divide-gray-200 shadow-sm">
+        {/* Archived Products */}
+        {canManageArchived && (
+          <div className="p-6 flex items-center justify-between">
+            <div>
+              <h3 className="font-medium text-gray-900 text-sm">
+                Archived Products
+              </h3>
+            </div>
+            <button
+              onClick={() => setShowArchivedModal(true)}
+              className="px-5 py-2 border border-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors duration-200"
+            >
+              Manage
+            </button>
+          </div>
+        )}
 
         {/* Archive All Products */}
-        <div className="p-6 flex items-center justify-between">
-          <div>
-            <h3 className="font-medium text-gray-900 text-sm">
-              Archive All Products
-            </h3>
-          </div>
-          <button
-            onClick={handleArchiveAll}
-            className="px-5 py-2 border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors duration-200"
-          >
-            Archive All
-          </button>
-        </div>
-
-        {/* Delete All Products */}
-        <div className="p-6 flex items-center justify-between">
-          <div>
-            <h3 className="font-medium text-gray-900 text-sm">
-              Delete All Products
-            </h3>
-          </div>
-          <button
-            onClick={handleDeleteAll}
-            className="px-5 py-2 border border-red-300 text-red-600 rounded-xl text-sm font-medium hover:bg-red-50 transition-colors duration-200"
-          >
-            Delete All
-          </button>
-        </div>
-
-        {/* Export Data */}
-        <div className="p-6">
-          <div>
-            <h3 className="font-medium text-gray-900 text-sm">Export Data</h3>
-            <p className="text-xs text-gray-500 mt-1">
-              Select one or more dates. Each selected date will be exported as a separate sheet.
-            </p>
-          </div>
-          <div className="mt-3 flex items-center gap-2">
-            <input
-              type="date"
-              value={exportDateInput}
-              onChange={(e) => setExportDateInput(e.target.value)}
-              className="h-10 px-3 py-2 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#8B2E2E]/20"
-            />
+        {isAdmin && (
+          <div className="p-6 flex items-center justify-between">
+            <div>
+              <h3 className="font-medium text-gray-900 text-sm">
+                Archive All Products
+              </h3>
+            </div>
             <button
-              onClick={handleAddExportDate}
-              className="px-4 py-2 border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors duration-200"
-            >
-              Add Date
-            </button>
-            <button
-              onClick={handleExportByDate}
+              onClick={handleArchiveAll}
               className="px-5 py-2 border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors duration-200"
             >
-              Export ({selectedExportDates.length})
+              Archive All
             </button>
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {selectedExportDates.length === 0 ? (
-              <p className="text-xs text-gray-500">No dates selected.</p>
-            ) : (
-              selectedExportDates.map((dateValue) => (
-                <span
-                  key={dateValue}
-                  className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-gray-100 text-xs text-gray-700"
-                >
-                  {dateValue}
-                  <button
-                    onClick={() => handleRemoveExportDate(dateValue)}
-                    className="text-gray-500 hover:text-gray-700"
-                    aria-label={`Remove ${dateValue}`}
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </span>
-              ))
-            )}
+        )}
+
+        {/* Delete All Products */}
+        {isAdmin && (
+          <div className="p-6 flex items-center justify-between">
+            <div>
+              <h3 className="font-medium text-gray-900 text-sm">
+                Delete All Products
+              </h3>
+            </div>
+            <button
+              onClick={handleDeleteAll}
+              className="px-5 py-2 border border-red-300 text-red-600 rounded-xl text-sm font-medium hover:bg-red-50 transition-colors duration-200"
+            >
+              Delete All
+            </button>
           </div>
+        )}
+
+        {/* Export Data */}
+        {canExportData && (
+          <div className="p-6">
+            <div>
+              <h3 className="font-medium text-gray-900 text-sm">Export Data</h3>
+              <p className="text-xs text-gray-500 mt-1">
+                Export by single date or date range. The workbook keeps one sheet per date.
+              </p>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-5 text-sm">
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  checked={exportDateMode === "single"}
+                  onChange={() => setExportDateMode("single")}
+                />
+                Single Date
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  checked={exportDateMode === "range"}
+                  onChange={() => setExportDateMode("range")}
+                />
+                Date Range
+              </label>
+            </div>
+
+            {exportDateMode === "single" ? (
+              <div className="mt-3">
+                <input
+                  type="date"
+                  value={singleExportDate}
+                  onChange={(e) => setSingleExportDate(e.target.value)}
+                  className="h-10 px-3 py-2 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#8B2E2E]/20"
+                />
+              </div>
+            ) : (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <input
+                  type="date"
+                  value={rangeStartDate}
+                  onChange={(e) => setRangeStartDate(e.target.value)}
+                  className="h-10 px-3 py-2 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#8B2E2E]/20"
+                />
+                <span className="text-xs text-gray-500">to</span>
+                <input
+                  type="date"
+                  value={rangeEndDate}
+                  onChange={(e) => setRangeEndDate(e.target.value)}
+                  className="h-10 px-3 py-2 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#8B2E2E]/20"
+                />
+              </div>
+            )}
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <label className="text-xs text-gray-500">Rows:</label>
+              <select
+                value={exportProductMode}
+                onChange={(e) =>
+                  setExportProductMode(e.target.value as "all_active_products" | "movement_only")
+                }
+                className="h-10 px-3 py-2 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#8B2E2E]/20 bg-white"
+              >
+                <option value="all_active_products">All Products (Active)</option>
+                <option value="movement_only">Movement Only</option>
+              </select>
+              <button
+                onClick={handleExportByDate}
+                className="px-5 py-2 border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors duration-200"
+              >
+                Export
+              </button>
+            </div>
+          </div>
+        )}
         </div>
-      </div>
+      )}
 
       {/* Archived Products Modal */}
       <AnimatePresence>

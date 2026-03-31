@@ -1,11 +1,13 @@
-import { useState, useMemo, useEffect } from "react";
-import { Search, ChevronDown, X, Download } from "lucide-react";
+import { useState, useMemo, useEffect, useRef } from "react";
+import { Search, ChevronDown, X, Download, ImageIcon } from "lucide-react";
 import { useInventory } from "../context/inventory-context";
 import { ActivityLog } from "../types";
 import { motion, AnimatePresence } from "motion/react";
 import { CurrentDateTime } from "../components/current-datetime";
 import { getSupabase, isSupabaseConfigured } from "../../lib/supabase";
 import { toast } from "sonner";
+import { useAuth } from "../context/auth-context";
+import { formatDateForDB, logActivity as logDbActivity } from "../../lib/db-utils";
 
 type UserOption = {
   id: string;
@@ -14,7 +16,8 @@ type UserOption = {
 };
 
 export function ActivityLogPage() {
-  const { activityLogs } = useInventory();
+  const { activityLogs, getProductById } = useInventory();
+  const { user, isAdmin, hasPermission } = useAuth();
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<"Newest First" | "Oldest">("Newest First");
   const [userFilter, setUserFilter] = useState<string>("all");
@@ -23,9 +26,33 @@ export function ActivityLogPage() {
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [selectedLog, setSelectedLog] = useState<ActivityLog | null>(null);
   const [showExportModal, setShowExportModal] = useState(false);
-  const [exportMode, setExportMode] = useState<"date" | "user" | "custom">("date");
+  const [exportMode, setExportMode] = useState<"date" | "user" | "custom" | "range">("date");
   const [exportDate, setExportDate] = useState("");
+  const [exportRangeStart, setExportRangeStart] = useState("");
+  const [exportRangeEnd, setExportRangeEnd] = useState("");
   const [exportUserId, setExportUserId] = useState("all");
+  const [exportFilterByUser, setExportFilterByUser] = useState(false);
+  const [isHeaderCompact, setIsHeaderCompact] = useState(false);
+  const mainScrollRef = useRef<HTMLDivElement | null>(null);
+  const canExportActivity = isAdmin || hasPermission("exportData");
+
+  useEffect(() => {
+    const updateCompactState = () => {
+      const containerScrollTop = mainScrollRef.current?.scrollTop || 0;
+      const shouldCompact = window.scrollY > 12 || containerScrollTop > 12;
+      setIsHeaderCompact((prev) => (prev === shouldCompact ? prev : shouldCompact));
+    };
+
+    const container = mainScrollRef.current;
+    window.addEventListener("scroll", updateCompactState, { passive: true });
+    container?.addEventListener("scroll", updateCompactState, { passive: true });
+    updateCompactState();
+
+    return () => {
+      window.removeEventListener("scroll", updateCompactState);
+      container?.removeEventListener("scroll", updateCompactState);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isSupabaseConfigured()) return;
@@ -108,11 +135,33 @@ export function ActivityLogPage() {
   };
 
   const exportActivityLogs = () => {
+    if (!canExportActivity) {
+      toast.error("You do not have permission to export activity logs.");
+      return;
+    }
+
+    const inRange = (isoDate: string, start: string, end: string) =>
+      isoDate >= start && isoDate <= end;
+
     const rows = dedupedLogs.filter((log) => {
       if (exportMode === "date") {
         if (!exportDate) return false;
         const logIsoDate = toIsoDate(log.timestamp);
-        return logIsoDate === exportDate;
+        if (logIsoDate !== exportDate) return false;
+        if (!exportFilterByUser) return true;
+        if (exportUserId === "all") return false;
+        return log.userId === exportUserId;
+      }
+      if (exportMode === "range") {
+        if (!exportRangeStart || !exportRangeEnd) return false;
+        const logIsoDate = toIsoDate(log.timestamp);
+        if (!logIsoDate) return false;
+        const start = exportRangeStart <= exportRangeEnd ? exportRangeStart : exportRangeEnd;
+        const end = exportRangeStart <= exportRangeEnd ? exportRangeEnd : exportRangeStart;
+        if (!inRange(logIsoDate, start, end)) return false;
+        if (!exportFilterByUser) return true;
+        if (exportUserId === "all") return false;
+        return log.userId === exportUserId;
       }
       if (exportMode === "custom") {
         if (!exportDate || exportUserId === "all") return false;
@@ -128,51 +177,132 @@ export function ActivityLogPage() {
       return;
     }
 
-    const csvEscape = (value: string): string => {
-      const safe = value.replace(/"/g, '""');
-      return `"${safe}"`;
+    const escapeXml = (value: string): string =>
+      value
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&apos;");
+
+    const buildCell = (value: string | number): string => {
+      const stringValue = String(value);
+      return `<Cell><Data ss:Type="String">${escapeXml(stringValue)}</Data></Cell>`;
     };
 
-    const header = ["Date & Time", "Name", "Email", "Role", "Activity", "Product"];
-    const content = [
-      header.join(","),
-      ...rows.map((log) =>
-        [
-          csvEscape(log.timestamp),
-          csvEscape(log.userName),
-          csvEscape(log.userEmail),
-          csvEscape(log.userRole),
-          csvEscape(log.activity),
-          csvEscape(log.productName || ""),
-        ].join(",")
-      ),
-    ].join("\n");
+    const buildRow = (values: Array<string | number>): string => {
+      return `<Row>${values.map((v) => buildCell(v)).join("")}</Row>`;
+    };
 
-    const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+    const byDate = new Map<string, ActivityLog[]>();
+    rows.forEach((row) => {
+      const isoDate = toIsoDate(row.timestamp) || "Unknown-Date";
+      const list = byDate.get(isoDate) || [];
+      list.push(row);
+      byDate.set(isoDate, list);
+    });
+
+    const headers = ["Date & Time", "Name", "Email", "Role", "Activity", "Product"];
+    const usedSheetNames = new Set<string>();
+    const buildSheetName = (dateValue: string): string => {
+      const base = (dateValue || "Sheet").replace(/[:\\/?*\[\]]/g, "-").slice(0, 31) || "Sheet";
+      let name = base;
+      let counter = 2;
+      while (usedSheetNames.has(name)) {
+        const suffix = `-${counter}`;
+        name = `${base.slice(0, Math.max(1, 31 - suffix.length))}${suffix}`;
+        counter += 1;
+      }
+      usedSheetNames.add(name);
+      return name;
+    };
+
+    const worksheetXml = Array.from(byDate.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([dateKey, dateRows]) => {
+        const sheetName = buildSheetName(dateKey);
+        const bodyRows = dateRows
+          .map((log) =>
+            buildRow([
+              log.timestamp,
+              log.userName,
+              log.userEmail,
+              log.userRole,
+              log.activity,
+              log.productName || "",
+            ])
+          )
+          .join("");
+
+        return `<Worksheet ss:Name="${escapeXml(sheetName)}"><Table>${buildRow(headers)}${bodyRows}</Table></Worksheet>`;
+      })
+      .join("");
+
+    const workbookXml = `<?xml version="1.0"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+ ${worksheetXml}
+</Workbook>`;
+
+    const blob = new Blob([workbookXml], { type: "application/vnd.ms-excel;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download =
       exportMode === "date"
-        ? `activity-log-date-${exportDate || "date"}.csv`
+        ? `activity-log-date-${exportDate || "date"}.xls`
+        : exportMode === "range"
+        ? `activity-log-range-${exportRangeStart || "start"}-${exportRangeEnd || "end"}.xls`
         : exportMode === "user"
-        ? `activity-log-user-${exportUserId === "all" ? "all" : exportUserId}.csv`
-        : `activity-log-custom-${exportDate || "date"}-${exportUserId}.csv`;
+        ? `activity-log-user-${exportUserId === "all" ? "all" : exportUserId}.xls`
+        : `activity-log-custom-${exportDate || "date"}-${exportUserId}.xls`;
     a.click();
     URL.revokeObjectURL(url);
+
+    if (user) {
+      void logDbActivity({
+        snapshot_date: formatDateForDB(new Date()),
+        actor_profile_id: user.id,
+        actor_username: user.username,
+        actor_role: user.role.toLowerCase(),
+        txn_type: "export",
+        note: `Exported activity log (${rows.length} rows, ${byDate.size} sheet${byDate.size > 1 ? "s" : ""})`,
+      });
+    }
+
     setShowExportModal(false);
   };
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <div className="flex-1 ml-16 p-6 overflow-y-auto bg-gray-50">
+      <div ref={mainScrollRef} className="flex-1 ml-16 p-6 overflow-y-auto bg-gray-50">
         <div>
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900 mb-1">Activity Log</h1>
-              <p className="text-sm text-gray-500">Track all system activities and changes</p>
+          <div className={isHeaderCompact ? "mb-5" : "mb-6"}>
+            {isHeaderCompact && <div className="h-[56px]" aria-hidden="true" />}
+            <div
+              className={`${isHeaderCompact ? "transition-all duration-200" : "transition-none"} ${
+                isHeaderCompact
+                  ? `fixed top-0 left-16 z-40 px-6 py-2 border-b border-gray-200 bg-gray-50/95 backdrop-blur supports-[backdrop-filter]:bg-gray-50/85 ${
+                      selectedLog ? "right-80" : "right-0"
+                    }`
+                  : ""
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h1 className={`font-bold text-gray-900 ${isHeaderCompact ? "text-xl mb-0" : "text-2xl mb-1"}`}>
+                    Activity Log
+                  </h1>
+                  {!isHeaderCompact && (
+                    <p className="text-sm text-gray-500">Track all system activities and changes</p>
+                  )}
+                </div>
+                {!selectedLog && <CurrentDateTime className={isHeaderCompact ? "!px-2.5 !py-1.5 !gap-2" : "text-xs text-gray-500"} />}
+              </div>
             </div>
-            {!selectedLog && <CurrentDateTime className="text-xs text-gray-500" />}
           </div>
 
           <div className="flex items-center justify-between mb-4">
@@ -264,13 +394,15 @@ export function ActivityLogPage() {
                 )}
               </div>
 
-              <button
-                onClick={() => setShowExportModal(true)}
-                className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded text-sm hover:bg-gray-50 bg-white"
-              >
-                <Download className="w-4 h-4" />
-                Export
-              </button>
+              {canExportActivity && (
+                <button
+                  onClick={() => setShowExportModal(true)}
+                  className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded text-sm hover:bg-gray-50 bg-white"
+                >
+                  <Download className="w-4 h-4" />
+                  Export
+                </button>
+              )}
             </div>
           </div>
 
@@ -366,10 +498,18 @@ export function ActivityLogPage() {
                   />
                   Custom
                 </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    checked={exportMode === "range"}
+                    onChange={() => setExportMode("range")}
+                  />
+                  Date Range
+                </label>
               </div>
 
               {exportMode === "date" && (
-                <div>
+                <div className="space-y-3">
                   <label className="text-xs text-gray-500 mb-1 block">Select Date</label>
                   <input
                     type="date"
@@ -377,6 +517,34 @@ export function ActivityLogPage() {
                     onChange={(e) => setExportDate(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-red-500"
                   />
+                  <label className="flex items-center gap-2 cursor-pointer text-sm">
+                    <input
+                      type="checkbox"
+                      checked={exportFilterByUser}
+                      onChange={(e) => setExportFilterByUser(e.target.checked)}
+                    />
+                    Filter by user
+                  </label>
+                  {exportFilterByUser && (
+                    <div>
+                      <label className="text-xs text-gray-500 mb-1 block">Select User</label>
+                      <div className="relative">
+                        <select
+                          value={exportUserId}
+                          onChange={(e) => setExportUserId(e.target.value)}
+                          className="w-full h-10 px-3 pr-9 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-red-500 appearance-none"
+                        >
+                          <option value="all">Select specific user</option>
+                          {userOptions.map((user) => (
+                            <option key={user.id} value={user.id}>
+                              {user.fullName} {user.email ? `(${user.email})` : ""}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -432,6 +600,57 @@ export function ActivityLogPage() {
                   </div>
                 </div>
               )}
+
+              {exportMode === "range" && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs text-gray-500 mb-1 block">Start Date</label>
+                    <input
+                      type="date"
+                      value={exportRangeStart}
+                      onChange={(e) => setExportRangeStart(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-red-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 mb-1 block">End Date</label>
+                    <input
+                      type="date"
+                      value={exportRangeEnd}
+                      onChange={(e) => setExportRangeEnd(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-red-500"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer text-sm">
+                    <input
+                      type="checkbox"
+                      checked={exportFilterByUser}
+                      onChange={(e) => setExportFilterByUser(e.target.checked)}
+                    />
+                    Filter by user
+                  </label>
+                  {exportFilterByUser && (
+                    <div>
+                      <label className="text-xs text-gray-500 mb-1 block">Select User</label>
+                      <div className="relative">
+                        <select
+                          value={exportUserId}
+                          onChange={(e) => setExportUserId(e.target.value)}
+                          className="w-full h-10 px-3 pr-9 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-red-500 appearance-none"
+                        >
+                          <option value="all">Select specific user</option>
+                          {userOptions.map((user) => (
+                            <option key={user.id} value={user.id}>
+                              {user.fullName} {user.email ? `(${user.email})` : ""}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="flex gap-3 mt-6">
@@ -445,13 +664,18 @@ export function ActivityLogPage() {
                 onClick={exportActivityLogs}
                 className="flex-1 px-4 py-2 bg-[#8B2E2E] text-white rounded text-sm hover:bg-[#B23A3A]"
               >
-                Export CSV
+                Export
               </button>
             </div>
           </div>
         </div>
       )}
 
+      {(() => {
+        const relatedProduct =
+          selectedLog?.productId ? getProductById(selectedLog.productId) : undefined;
+        const relatedProductImage = relatedProduct?.imageUrl;
+        return (
       <AnimatePresence>
         {selectedLog && selectedLog.productId && (
           <motion.div
@@ -473,7 +697,15 @@ export function ActivityLogPage() {
 
             <div className="flex-1 p-6 overflow-y-auto space-y-6">
               <div className="w-40 h-40 bg-white rounded-[20px] mx-auto flex items-center justify-center shadow-lg">
-                <div className="w-24 h-32 bg-orange-400 rounded"></div>
+                {relatedProductImage ? (
+                  <img
+                    src={relatedProductImage}
+                    alt={selectedLog.productName || "Related product"}
+                    className="w-full h-full object-cover rounded-[20px]"
+                  />
+                ) : (
+                  <ImageIcon className="w-16 h-16 text-gray-300" />
+                )}
               </div>
               <div className="space-y-5 text-sm">
                 <div>
@@ -506,6 +738,8 @@ export function ActivityLogPage() {
           </motion.div>
         )}
       </AnimatePresence>
+        );
+      })()}
     </div>
   );
 }

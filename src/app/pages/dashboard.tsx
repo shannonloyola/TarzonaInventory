@@ -50,6 +50,7 @@ export function DashboardPage() {
   // State for calendar navigation
   const [calendarMonth, setCalendarMonth] = useState(parsedSelectedDate);
   const [isMonthPickerOpen, setIsMonthPickerOpen] = useState(false);
+  const monthPickerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!parsedSelectedDate) return;
@@ -135,6 +136,22 @@ export function DashboardPage() {
       container?.removeEventListener("scroll", updateCompactState);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isMonthPickerOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!monthPickerRef.current?.contains(target)) {
+        setIsMonthPickerOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [isMonthPickerOpen]);
 
   // Calculate low stock items (end <= 20% of beginning)
   const lowStockItems = currentInventory
@@ -227,6 +244,7 @@ export function DashboardPage() {
 
   // Get top products for overview panel
   const getTopProducts = () => {
+    const limit = selectedMetric === "stockIn" || selectedMetric === "stockOut" ? 5 : 7;
     if (selectedMetric === "products") {
       // For products, just show distinct products (doesn't matter which data)
       return currentInventory
@@ -239,7 +257,7 @@ export function DashboardPage() {
           };
         })
         .sort((a, b) => b.quantity - a.quantity)
-        .slice(0, 7);
+        .slice(0, limit);
     } else if (selectedMetric === "items") {
       // For items, show by end stock quantity
       return currentInventory
@@ -252,7 +270,7 @@ export function DashboardPage() {
           };
         })
         .sort((a, b) => b.quantity - a.quantity)
-        .slice(0, 7);
+        .slice(0, limit);
     } else if (selectedMetric === "stockIn") {
       // For stock in, show by "in" value
       return currentInventory
@@ -266,7 +284,7 @@ export function DashboardPage() {
           };
         })
         .sort((a, b) => b.quantity - a.quantity)
-        .slice(0, 7);
+        .slice(0, limit);
     } else if (selectedMetric === "stockOut") {
       // For stock out, show by "out" value
       return currentInventory
@@ -280,7 +298,7 @@ export function DashboardPage() {
           };
         })
         .sort((a, b) => b.quantity - a.quantity)
-        .slice(0, 7);
+        .slice(0, limit);
     }
     
     return [];
@@ -294,6 +312,7 @@ export function DashboardPage() {
           const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
+            size: product?.size || "",
             category: product?.category || "Unknown",
             quantity: item.end
           };
@@ -305,6 +324,7 @@ export function DashboardPage() {
           const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
+            size: product?.size || "",
             category: product?.category || "Unknown",
             quantity: item.end
           };
@@ -317,6 +337,7 @@ export function DashboardPage() {
           const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
+            size: product?.size || "",
             category: product?.category || "Unknown",
             quantity: item.in
           };
@@ -329,6 +350,7 @@ export function DashboardPage() {
           const product = activeProducts.find(p => p.id === item.productId);
           return {
             name: product?.name || "Unknown",
+            size: product?.size || "",
             category: product?.category || "Unknown",
             quantity: item.out
           };
@@ -408,96 +430,98 @@ export function DashboardPage() {
 
           {/* Column 3 - Row 1 & 2: Calendar (spans 2 rows vertically) */}
           <div className="xl:row-span-2 bg-white border border-gray-200 rounded-[16px] p-6 shadow-sm relative">
-            {/* Month/Year Header - Clickable Dropdown */}
-            <button 
-              onClick={() => setIsMonthPickerOpen(!isMonthPickerOpen)}
-              className="flex items-center justify-between w-full mb-4 hover:opacity-70 transition-opacity"
-            >
-              <h3 className="text-sm font-semibold text-[#8B2E2E]">{monthYear}</h3>
-              <ChevronDown className={`w-4 h-4 text-[#8B2E2E] transition-transform duration-200 ${isMonthPickerOpen ? 'rotate-180' : ''}`} />
-            </button>
+            <div ref={monthPickerRef}>
+              {/* Month/Year Header - Clickable Dropdown */}
+              <button 
+                onClick={() => setIsMonthPickerOpen(!isMonthPickerOpen)}
+                className="flex items-center justify-between w-full mb-4 hover:opacity-70 transition-opacity"
+              >
+                <h3 className="text-sm font-semibold text-[#8B2E2E]">{monthYear}</h3>
+                <ChevronDown className={`w-4 h-4 text-[#8B2E2E] transition-transform duration-200 ${isMonthPickerOpen ? 'rotate-180' : ''}`} />
+              </button>
 
-            {/* Month/Year Picker Dropdown - Absolute positioned overlay */}
-            {isMonthPickerOpen && (
-              <div className="absolute top-16 left-6 right-6 z-50 p-4 bg-white rounded-lg border-2 border-[#8B2E2E] shadow-xl space-y-3">
-                {/* Year Selector */}
-                <div>
-                  <label className="block text-[10px] font-semibold text-gray-500 uppercase mb-2">Year</label>
-                  <div className="relative">
-                    <select
-                      value={calendarMonth.getFullYear()}
-                      onChange={(e) => {
-                        const newYear = parseInt(e.target.value);
-                        const newMonth = calendarMonth.getMonth();
+              {/* Month/Year Picker Dropdown - Absolute positioned overlay */}
+              {isMonthPickerOpen && (
+                <div className="absolute top-16 left-6 right-6 z-50 p-4 bg-white rounded-lg border-2 border-[#8B2E2E] shadow-xl space-y-3">
+                  {/* Year Selector */}
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-500 uppercase mb-2">Year</label>
+                    <div className="relative">
+                      <select
+                        value={calendarMonth.getFullYear()}
+                        onChange={(e) => {
+                          const newYear = parseInt(e.target.value);
+                          const newMonth = calendarMonth.getMonth();
 
-                        // If selecting current year, make sure month is not in future
-                        if (newYear === currentYear && newMonth > currentMonth) {
-                          setCalendarMonth(new Date(newYear, currentMonth, 1));
-                        } else {
-                          setCalendarMonth(new Date(newYear, newMonth, 1));
-                        }
-                      }}
-                      className="w-full h-10 px-3 pr-9 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#8B2E2E] focus:border-transparent appearance-none"
-                    >
-                      {years.map((year) => (
-                        <option key={year} value={year}>
-                          {year}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-                  </div>
-                </div>
-
-                {/* Month Selector */}
-                <div>
-                  <label className="block text-[10px] font-semibold text-gray-500 uppercase mb-2">Month</label>
-                  <div className="relative">
-                    <select
-                      value={calendarMonth.getMonth()}
-                      onChange={(e) => {
-                        const newMonth = parseInt(e.target.value);
-                        const newYear = calendarMonth.getFullYear();
-                        const newDate = new Date(newYear, newMonth, 1);
-
-                        // Check if this month/year combination is in the future
-                        if (newYear > currentYear || (newYear === currentYear && newMonth > currentMonth)) {
-                          return; // Don't allow future months
-                        }
-
-                        setCalendarMonth(newDate);
-                      }}
-                      className="w-full h-10 px-3 pr-9 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#8B2E2E] focus:border-transparent appearance-none"
-                    >
-                      {months.map((month, index) => {
-                        const isDisabled = calendarMonth.getFullYear() === currentYear && index > currentMonth;
-                        return (
-                          <option key={index} value={index} disabled={isDisabled}>
-                            {month}
+                          // If selecting current year, make sure month is not in future
+                          if (newYear === currentYear && newMonth > currentMonth) {
+                            setCalendarMonth(new Date(newYear, currentMonth, 1));
+                          } else {
+                            setCalendarMonth(new Date(newYear, newMonth, 1));
+                          }
+                        }}
+                        className="w-full h-10 px-3 pr-9 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#8B2E2E] focus:border-transparent appearance-none"
+                      >
+                        {years.map((year) => (
+                          <option key={year} value={year}>
+                            {year}
                           </option>
-                        );
-                      })}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                        ))}
+                      </select>
+                      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                    </div>
                   </div>
-                </div>
 
-                {/* Go to Today Button */}
-                <button
-                  onClick={() => {
-                    const today = new Date();
-                    setCalendarMonth(today);
-                    // Also set the selected date to today
-                    const todayStr = `${today.getMonth() + 1}-${today.getDate()}-${format(today, "yyyy")}`;
-                    setSelectedDate(todayStr);
-                    setIsMonthPickerOpen(false);
-                  }}
-                  className="w-full px-3 py-2 text-xs font-medium text-gray-700 bg-white hover:bg-gray-100 border border-gray-300 rounded-lg transition-colors"
-                >
-                  Go to Today
-                </button>
-              </div>
-            )}
+                  {/* Month Selector */}
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-500 uppercase mb-2">Month</label>
+                    <div className="relative">
+                      <select
+                        value={calendarMonth.getMonth()}
+                        onChange={(e) => {
+                          const newMonth = parseInt(e.target.value);
+                          const newYear = calendarMonth.getFullYear();
+                          const newDate = new Date(newYear, newMonth, 1);
+
+                          // Check if this month/year combination is in the future
+                          if (newYear > currentYear || (newYear === currentYear && newMonth > currentMonth)) {
+                            return; // Don't allow future months
+                          }
+
+                          setCalendarMonth(newDate);
+                        }}
+                        className="w-full h-10 px-3 pr-9 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#8B2E2E] focus:border-transparent appearance-none"
+                      >
+                        {months.map((month, index) => {
+                          const isDisabled = calendarMonth.getFullYear() === currentYear && index > currentMonth;
+                          return (
+                            <option key={index} value={index} disabled={isDisabled}>
+                              {month}
+                            </option>
+                          );
+                        })}
+                      </select>
+                      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                    </div>
+                  </div>
+
+                  {/* Go to Today Button */}
+                  <button
+                    onClick={() => {
+                      const today = new Date();
+                      setCalendarMonth(today);
+                      // Also set the selected date to today
+                      const todayStr = `${today.getMonth() + 1}-${today.getDate()}-${format(today, "yyyy")}`;
+                      setSelectedDate(todayStr);
+                      setIsMonthPickerOpen(false);
+                    }}
+                    className="w-full px-3 py-2 text-xs font-medium text-gray-700 bg-white hover:bg-gray-100 border border-gray-300 rounded-lg transition-colors"
+                  >
+                    Go to Today
+                  </button>
+                </div>
+              )}
+            </div>
 
             {/* Day headers */}
             <div className="grid grid-cols-7 gap-1 text-[10px] font-semibold text-gray-500 text-center mb-3">
@@ -683,7 +707,7 @@ export function DashboardPage() {
                 <div key={index} className="flex items-center justify-between py-3 border-b border-gray-700">
                   <div className="min-w-0">
                     <p className="text-sm text-gray-300 truncate">{product.name}</p>
-                    {selectedMetric === "stockOut" && product.size ? (
+                    {(selectedMetric === "stockOut" || selectedMetric === "stockIn") && product.size ? (
                       <p className="text-[11px] text-gray-500 truncate">{product.size}</p>
                     ) : null}
                   </div>
@@ -725,6 +749,9 @@ export function DashboardPage() {
               <thead className="bg-gray-50 sticky top-0">
                 <tr>
                   <th className="text-left py-3 px-4 text-xs font-semibold text-gray-600">Product</th>
+                  {(selectedMetric === "stockIn" || selectedMetric === "stockOut") && (
+                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-600">Size</th>
+                  )}
                   <th className="text-left py-3 px-4 text-xs font-semibold text-gray-600">Category</th>
                   <th className="text-right py-3 px-4 text-xs font-semibold text-gray-600">Quantity</th>
                 </tr>
@@ -732,12 +759,20 @@ export function DashboardPage() {
               <tbody className="divide-y divide-gray-100">
                 {getAllProductsSorted().length === 0 ? (
                   <tr>
-                    <td colSpan={3} className="py-8 text-center text-sm text-gray-500">No products available.</td>
+                    <td
+                      colSpan={selectedMetric === "stockIn" || selectedMetric === "stockOut" ? 4 : 3}
+                      className="py-8 text-center text-sm text-gray-500"
+                    >
+                      No products available.
+                    </td>
                   </tr>
                 ) : (
                   getAllProductsSorted().map((product, index) => (
                     <tr key={index} className="hover:bg-gray-50 transition-colors">
                       <td className="py-3 px-4 text-sm font-medium text-gray-900">{product.name}</td>
+                      {(selectedMetric === "stockIn" || selectedMetric === "stockOut") && (
+                        <td className="py-3 px-4 text-sm text-gray-500">{product.size || "-"}</td>
+                      )}
                       <td className="py-3 px-4 text-sm text-gray-500">{product.category}</td>
                       <td className="py-3 px-4 text-sm text-right font-semibold text-[#8B2E2E]">{product.quantity}</td>
                     </tr>

@@ -3,6 +3,11 @@ import { LayoutGrid, Archive, Settings, LogOut, BarChart3 } from "lucide-react";
 import { useAuth } from "../../context/auth-context";
 import logoImg from "../../../assets/15825036d4201b31b7d5ae419f0c1967c2e8fb77.png";
 
+const LAST_PROTECTED_ROUTE_KEY = "tarzona_last_protected_route";
+const PENDING_LOGIN_REDIRECT_KEY = "tarzona_pending_login_redirect";
+const LOGOUT_LANDING_MODE_KEY = "logoutLandingMode";
+const SUPPRESS_NEXT_PROTECTED_REDIRECT_KEY = "suppressNextProtectedRedirect";
+
 export function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -15,8 +20,12 @@ export function Sidebar() {
   };
 
   const handleLogout = () => {
+    localStorage.removeItem(LAST_PROTECTED_ROUTE_KEY);
+    sessionStorage.removeItem(PENDING_LOGIN_REDIRECT_KEY);
+    sessionStorage.setItem(LOGOUT_LANDING_MODE_KEY, "dashboard");
+    sessionStorage.setItem(SUPPRESS_NEXT_PROTECTED_REDIRECT_KEY, "1");
     logout();
-    navigate("/login");
+    navigate("/login", { replace: true });
   };
 
   return (

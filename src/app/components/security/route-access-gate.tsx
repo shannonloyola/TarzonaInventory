@@ -4,6 +4,8 @@ import { useAuth } from "../../context/auth-context";
 import { getSession } from "../../../lib/db-utils";
 
 const LAST_PROTECTED_ROUTE_KEY = "tarzona_last_protected_route";
+const PENDING_LOGIN_REDIRECT_KEY = "tarzona_pending_login_redirect";
+const SUPPRESS_NEXT_PROTECTED_REDIRECT_KEY = "suppressNextProtectedRedirect";
 
 function isProtectedPath(pathname: string): boolean {
   return (
@@ -31,7 +33,27 @@ export function RouteAccessGate({ children }: { children: ReactNode }) {
   if (!isAuthReady) return null;
 
   if (!user || !hasStoredSession) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    const suppressNextProtectedRedirect =
+      sessionStorage.getItem(SUPPRESS_NEXT_PROTECTED_REDIRECT_KEY) === "1";
+    if (suppressNextProtectedRedirect) {
+      sessionStorage.removeItem(SUPPRESS_NEXT_PROTECTED_REDIRECT_KEY);
+      try {
+        sessionStorage.removeItem(PENDING_LOGIN_REDIRECT_KEY);
+      } catch {
+        // noop
+      }
+      return <Navigate to="/login" replace />;
+    }
+
+    const fromWithSearch = `${location.pathname}${location.search || ""}`;
+    if (isProtectedPath(location.pathname)) {
+      try {
+        sessionStorage.setItem(PENDING_LOGIN_REDIRECT_KEY, fromWithSearch);
+      } catch {
+        // noop
+      }
+    }
+    return <Navigate to="/login" replace state={{ from: fromWithSearch }} />;
   }
 
   return <>{children}</>;

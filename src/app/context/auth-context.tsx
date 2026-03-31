@@ -9,6 +9,7 @@ import {
   AuthAdapter,
 } from "../../lib/auth-adapter";
 import { getSecurityConfig } from "../../lib/security-config";
+import { formatDateForDB, logActivity as logDbActivity } from "../../lib/db-utils";
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -17,6 +18,7 @@ type StaffPermissionRow = {
   can_delete_product?: boolean | null;
   can_edit_product?: boolean | null;
   can_archive_product?: boolean | null;
+  can_export_data?: boolean | null;
   can_grant_admin?: boolean | null;
 };
 
@@ -26,10 +28,9 @@ function normalizeStaffPermissions(perms: StaffPermissionRow | null | undefined)
     addProduct: !!perms?.can_add_product,
     deleteProduct: !!perms?.can_delete_product,
     editProduct: canEdit,
-    archiveProduct:
-      typeof perms?.can_archive_product === "boolean"
-        ? perms.can_archive_product
-        : canEdit,
+    // Archive access must be explicitly granted.
+    archiveProduct: !!perms?.can_archive_product,
+    exportData: !!perms?.can_export_data,
     // Current schema has no separate item-level flags, so edit access also unlocks edit-mode item controls.
     addItem: canEdit,
     deleteItem: canEdit,
@@ -238,6 +239,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         permissions: userPermissions,
       });
 
+      void logDbActivity({
+        snapshot_date: formatDateForDB(new Date()),
+        actor_profile_id: profile.id,
+        actor_username: profile.username,
+        actor_role: actualRole,
+        txn_type: "profile_edit",
+        note: `User login: ${profile.username}`,
+      });
+
       return true;
     } catch (err) {
       console.error('Login error:', err);
@@ -246,6 +256,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
+    if (user?.id && user?.username) {
+      void logDbActivity({
+        snapshot_date: formatDateForDB(new Date()),
+        actor_profile_id: user.id,
+        actor_username: user.username,
+        actor_role: user.role.toLowerCase(),
+        txn_type: "profile_edit",
+        note: `User logout: ${user.username}`,
+      });
+    }
     setUser(null);
     clearSession();
   };

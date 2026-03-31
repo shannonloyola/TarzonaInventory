@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { getSupabase, isSupabaseConfigured } from "../../../lib/supabase";
 import bcrypt from "bcryptjs";
 import { UserPlus, ChevronDown } from "lucide-react";
+import { formatDateForDB, logActivity as logDbActivity } from "../../../lib/db-utils";
 
 type ProfileRow = {
   id: string;
@@ -20,6 +21,7 @@ type StaffPermRow = {
   can_delete_product: boolean;
   can_edit_product: boolean;
   can_archive_product?: boolean | null;
+  can_export_data?: boolean | null;
   can_grant_admin: boolean;
 };
 
@@ -49,15 +51,48 @@ const defaultStaffPerms: StaffPermissions = {
   addProduct: false,
   deleteProduct: false,
   editProduct: true,
-  archiveProduct: true,
+  archiveProduct: false,
+  exportData: false,
   addItem: false,
   deleteItem: false,
 };
 
-function isMissingArchivePermissionColumn(error: unknown): boolean {
+function isMissingOptionalPermissionColumn(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const message = String((error as { message?: unknown }).message || "").toLowerCase();
-  return message.includes("can_archive_product") && message.includes("column");
+  return (
+    (message.includes("can_archive_product") && message.includes("column")) ||
+    (message.includes("can_export_data") && message.includes("column"))
+  );
+}
+
+function removeMissingPermissionColumnFromPayload<T extends Record<string, unknown>>(
+  payload: T,
+  error: unknown
+): T {
+  if (!error || typeof error !== "object") return payload;
+  const message = String((error as { message?: unknown }).message || "").toLowerCase();
+  const next = { ...payload };
+  if (message.includes("can_archive_product") && message.includes("column")) {
+    delete next.can_archive_product;
+  }
+  if (message.includes("can_export_data") && message.includes("column")) {
+    delete next.can_export_data;
+  }
+  return next as T;
+}
+
+function getMissingPermissionColumns(error: unknown): string[] {
+  if (!error || typeof error !== "object") return [];
+  const message = String((error as { message?: unknown }).message || "").toLowerCase();
+  const missing: string[] = [];
+  if (message.includes("can_archive_product") && message.includes("column")) {
+    missing.push("can_archive_product");
+  }
+  if (message.includes("can_export_data") && message.includes("column")) {
+    missing.push("can_export_data");
+  }
+  return missing;
 }
 
 export function TeamManagementPage() {
@@ -144,10 +179,8 @@ export function TeamManagementPage() {
                 addProduct: !!staffPerm?.can_add_product,
                 deleteProduct: !!staffPerm?.can_delete_product,
                 editProduct: !!staffPerm?.can_edit_product,
-                archiveProduct:
-                  typeof staffPerm?.can_archive_product === "boolean"
-                    ? staffPerm.can_archive_product
-                    : !!staffPerm?.can_edit_product,
+                archiveProduct: !!staffPerm?.can_archive_product,
+                exportData: !!staffPerm?.can_export_data,
                 addItem: false,
                 deleteItem: false,
               }
@@ -178,6 +211,7 @@ export function TeamManagementPage() {
           editProduct: false,
           deleteProduct: false,
           archiveProduct: false,
+          exportData: false,
           addItem: false,
           deleteItem: false,
         }
@@ -191,6 +225,7 @@ export function TeamManagementPage() {
       editProduct: true,
       deleteProduct: true,
       archiveProduct: true,
+      exportData: true,
       addItem: false,
       deleteItem: false,
     });
@@ -268,6 +303,7 @@ export function TeamManagementPage() {
             can_delete_product: editedPermissions.deleteProduct,
             can_edit_product: editedPermissions.editProduct,
             can_archive_product: editedPermissions.archiveProduct,
+            can_export_data: editedPermissions.exportData,
             can_grant_admin: false,
           };
 
@@ -275,20 +311,33 @@ export function TeamManagementPage() {
             .from("staff_permissions")
             .upsert(upsertPayload, { onConflict: "staff_profile_id" });
 
-          // Backward compatibility: support databases without can_archive_product column yet.
-          if (permsError && isMissingArchivePermissionColumn(permsError)) {
-            ({ error: permsError } = await supabase.from("staff_permissions").upsert(
-              {
-                staff_profile_id: editingUserId,
-                can_add_product: editedPermissions.addProduct,
-                can_delete_product: editedPermissions.deleteProduct,
-                can_edit_product: editedPermissions.editProduct,
-                can_grant_admin: false,
-              },
-              { onConflict: "staff_profile_id" }
-            ));
+          // Backward compatibility: support databases without optional permission columns yet.
+          if (permsError && isMissingOptionalPermissionColumn(permsError)) {
+            const missingColumns = getMissingPermissionColumns(permsError);
+            if (missingColumns.length > 0) {
+              const warningMessage = `Database is missing staff permission column(s): ${missingColumns.join(", ")}. Permissions may not persist until schema is updated.`;
+              console.warn(warningMessage, permsError);
+              toast.warning(warningMessage);
+            }
+            const retryPayload = removeMissingPermissionColumnFromPayload(upsertPayload, permsError);
+            ({ error: permsError } = await supabase
+              .from("staff_permissions")
+              .upsert(retryPayload, { onConflict: "staff_profile_id" }));
           }
           if (permsError) throw permsError;
+        }
+
+        if (currentUser) {
+          await logDbActivity({
+            snapshot_date: formatDateForDB(new Date()),
+            actor_profile_id: currentUser.id,
+            actor_username: currentUser.username,
+            actor_role: currentUser.role.toLowerCase(),
+            txn_type: "permission_change",
+            note: `Updated permissions for ${editingUser.username} (${grantAdminAccess ? "admin" : "staff"})`,
+            product_id: null,
+            product_name: null,
+          });
         }
 
         await loadUsers();
@@ -386,6 +435,7 @@ export function TeamManagementPage() {
             can_delete_product: newStaffPermissions.deleteProduct,
             can_edit_product: newStaffPermissions.editProduct,
             can_archive_product: newStaffPermissions.archiveProduct,
+            can_export_data: newStaffPermissions.exportData,
             can_grant_admin: false,
           };
 
@@ -393,19 +443,33 @@ export function TeamManagementPage() {
             .from("staff_permissions")
             .insert(insertPayload);
 
-          // Backward compatibility: support databases without can_archive_product column yet.
-          if (permsError && isMissingArchivePermissionColumn(permsError)) {
+          // Backward compatibility: support databases without optional permission columns yet.
+          if (permsError && isMissingOptionalPermissionColumn(permsError)) {
+            const missingColumns = getMissingPermissionColumns(permsError);
+            if (missingColumns.length > 0) {
+              const warningMessage = `Database is missing staff permission column(s): ${missingColumns.join(", ")}. Permissions may not persist until schema is updated.`;
+              console.warn(warningMessage, permsError);
+              toast.warning(warningMessage);
+            }
+            const retryPayload = removeMissingPermissionColumnFromPayload(insertPayload, permsError);
             ({ error: permsError } = await supabase
               .from("staff_permissions")
-              .insert({
-                staff_profile_id: profile.id,
-                can_add_product: newStaffPermissions.addProduct,
-                can_delete_product: newStaffPermissions.deleteProduct,
-                can_edit_product: newStaffPermissions.editProduct,
-                can_grant_admin: false,
-              }));
+              .insert(retryPayload));
           }
           if (permsError) throw permsError;
+        }
+
+        if (currentUser) {
+          await logDbActivity({
+            snapshot_date: formatDateForDB(new Date()),
+            actor_profile_id: currentUser.id,
+            actor_username: currentUser.username,
+            actor_role: currentUser.role.toLowerCase(),
+            txn_type: "permission_change",
+            note: `Created user ${username} (${role})`,
+            product_id: null,
+            product_name: null,
+          });
         }
 
         await loadUsers();
@@ -524,6 +588,19 @@ export function TeamManagementPage() {
           }
         } else {
           toast.success("User deleted successfully.");
+        }
+
+        if (currentUser) {
+          await logDbActivity({
+            snapshot_date: formatDateForDB(new Date()),
+            actor_profile_id: currentUser.id,
+            actor_username: currentUser.username,
+            actor_role: currentUser.role.toLowerCase(),
+            txn_type: "permission_change",
+            note: `Removed user ${deleteTargetUser.username}`,
+            product_id: null,
+            product_name: null,
+          });
         }
 
         await loadUsers();
@@ -647,6 +724,12 @@ export function TeamManagementPage() {
                 disabled={grantAdminAccess}
               />
               <PermissionCheckbox
+                label="Export"
+                checked={!!editedPermissions?.exportData}
+                onChange={() => handlePermissionChange("exportData")}
+                disabled={grantAdminAccess}
+              />
+              <PermissionCheckbox
                 label="Grant Admin Access"
                 checked={grantAdminAccess}
                 onChange={() => setGrantAdminAccess(!grantAdminAccess)}
@@ -754,6 +837,16 @@ export function TeamManagementPage() {
                       setNewStaffPermissions((prev) => ({
                         ...prev,
                         archiveProduct: !prev.archiveProduct,
+                      }))
+                    }
+                  />
+                  <PermissionCheckbox
+                    label="Export"
+                    checked={newStaffPermissions.exportData}
+                    onChange={() =>
+                      setNewStaffPermissions((prev) => ({
+                        ...prev,
+                        exportData: !prev.exportData,
                       }))
                     }
                   />
