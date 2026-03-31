@@ -206,7 +206,9 @@ export function InventoryPage() {
   const [passwordConfirmValue, setPasswordConfirmValue] = useState("");
   const [passwordConfirmError, setPasswordConfirmError] = useState("");
   const [isPasswordConfirming, setIsPasswordConfirming] = useState(false);
+  const [isHeaderCompact, setIsHeaderCompact] = useState(false);
   const passwordConfirmResolverRef = useRef<((value: boolean) => void) | null>(null);
+  const mainScrollRef = useRef<HTMLDivElement | null>(null);
 
   const activeProducts = products.filter((p) => !p.archived);
   const inventory = getInventoryForDate(selectedDate);
@@ -458,6 +460,24 @@ export function InventoryPage() {
 
   const totalItems = inventory.reduce((sum, item) => sum + item.end, 0);
 
+  useEffect(() => {
+    const updateCompactState = () => {
+      const containerScrollTop = mainScrollRef.current?.scrollTop || 0;
+      const shouldCompact = window.scrollY > 12 || containerScrollTop > 12;
+      setIsHeaderCompact((prev) => (prev === shouldCompact ? prev : shouldCompact));
+    };
+
+    const container = mainScrollRef.current;
+    window.addEventListener("scroll", updateCompactState, { passive: true });
+    container?.addEventListener("scroll", updateCompactState, { passive: true });
+    updateCompactState();
+
+    return () => {
+      window.removeEventListener("scroll", updateCompactState);
+      container?.removeEventListener("scroll", updateCompactState);
+    };
+  }, []);
+
   // Calculate low stock items (end <= 20% of beginning)
   const lowStockItems = inventory
     .filter(item => {
@@ -480,19 +500,39 @@ export function InventoryPage() {
     <div className="flex min-h-screen bg-gray-50">
       {/* Main Content - shifts left when drawer is open */}
       <div 
+        ref={mainScrollRef}
         className={`flex-1 min-w-0 ml-16 py-4 sm:py-6 lg:py-8 pl-4 sm:pl-6 lg:pl-8 pr-4 sm:pr-6 lg:pr-8 overflow-y-auto transition-all duration-300 ease-out ${
           drawerState ? "xl:mr-80" : "mr-0"
         }`}
       >
         {/* Header */}
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-8">
-          <h1 className="text-2xl font-bold text-gray-900">Inventory</h1>
-          <div className="flex items-center gap-3 ml-auto">
-            <div className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 shadow-sm">
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Date Selected</span>
-              <span className="text-sm font-semibold text-[#8B2E2E]">{selectedDateLabel}</span>
+        <div className={isHeaderCompact ? "mb-5" : "mb-8"}>
+          {isHeaderCompact && <div className="h-[56px]" aria-hidden="true" />}
+          <div
+            className={`transition-all duration-200 ${
+              isHeaderCompact
+                ? `fixed top-0 left-16 z-40 px-4 sm:px-6 lg:px-8 py-2 border-b border-gray-200 bg-gray-50/95 backdrop-blur supports-[backdrop-filter]:bg-gray-50/85 ${
+                    drawerState ? "right-0 xl:right-80" : "right-0"
+                  }`
+                : ""
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h1 className={`font-bold text-gray-900 ${isHeaderCompact ? "text-xl" : "text-2xl"}`}>Inventory</h1>
+              <div className="flex items-center gap-3 ml-auto">
+                <div
+                  className={`inline-flex items-center rounded-xl border border-gray-200 bg-white shadow-sm transition-all ${
+                    isHeaderCompact ? "gap-1.5 px-2.5 py-1.5" : "gap-2 px-3 py-2"
+                  }`}
+                >
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Date Selected</span>
+                  <span className={`${isHeaderCompact ? "text-xs" : "text-sm"} font-semibold text-[#8B2E2E]`}>
+                    {selectedDateLabel}
+                  </span>
+                </div>
+                <CurrentDateTime className={isHeaderCompact ? "!px-2.5 !py-1.5 !gap-2" : ""} />
+              </div>
             </div>
-            <CurrentDateTime />
           </div>
         </div>
 
