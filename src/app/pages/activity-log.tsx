@@ -16,6 +16,7 @@ type UserOption = {
 };
 
 export function ActivityLogPage() {
+  const LOG_BATCH_SIZE = 20;
   const { activityLogs, getProductById } = useInventory();
   const { user, isAdmin, hasPermission } = useAuth();
   const [searchQuery, setSearchQuery] = useState("");
@@ -33,6 +34,7 @@ export function ActivityLogPage() {
   const [exportUserId, setExportUserId] = useState("all");
   const [exportFilterByUser, setExportFilterByUser] = useState(false);
   const [isHeaderCompact, setIsHeaderCompact] = useState(false);
+  const [visibleLogCount, setVisibleLogCount] = useState(LOG_BATCH_SIZE);
   const mainScrollRef = useRef<HTMLDivElement | null>(null);
   const canExportActivity = isAdmin || hasPermission("exportData");
 
@@ -120,6 +122,13 @@ export function ActivityLogPage() {
         return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
       });
   }, [dedupedLogs, searchQuery, sortBy, userFilter]);
+
+  useEffect(() => {
+    setVisibleLogCount(LOG_BATCH_SIZE);
+  }, [searchQuery, sortBy, userFilter, dedupedLogs.length]);
+
+  const visibleLogs = filteredLogs.slice(0, visibleLogCount);
+  const hasMoreLogs = visibleLogCount < filteredLogs.length;
 
   const handleRowClick = (log: ActivityLog) => {
     if (log.productId) setSelectedLog(log);
@@ -418,7 +427,7 @@ export function ActivityLogPage() {
                 </tr>
               </thead>
               <tbody>
-                {filteredLogs.map((log) => {
+                {visibleLogs.map((log) => {
                   const isSelected = selectedLog?.id === log.id;
                   const hasProduct = Boolean(log.productId);
 
@@ -461,6 +470,30 @@ export function ActivityLogPage() {
               </tbody>
             </table>
           </div>
+
+          {filteredLogs.length > 0 && (
+            <div className="mt-4 flex flex-col items-center gap-2">
+              {hasMoreLogs && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setVisibleLogCount((prev) => prev + LOG_BATCH_SIZE)}
+                    className="px-5 py-2 rounded text-sm font-medium text-white bg-[#8B2E2E] hover:bg-[#742525] transition-colors"
+                  >
+                    Load More
+                  </button>
+                  <button
+                    onClick={() => setVisibleLogCount(filteredLogs.length)}
+                    className="px-5 py-2 rounded text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 transition-colors"
+                  >
+                    Load All
+                  </button>
+                </div>
+              )}
+              <p className="text-xs text-gray-500">
+                Showing {Math.min(visibleLogCount, filteredLogs.length)} of {filteredLogs.length} log entries
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
