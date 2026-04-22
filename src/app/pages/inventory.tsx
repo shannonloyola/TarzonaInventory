@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Search, Plus, Download, Archive, ChevronDown, ImageIcon, Minus, Pencil, X, Filter } from "lucide-react";
+import { Search, Plus, Download, Archive, ChevronDown, ChevronLeft, ChevronRight, ImageIcon, Minus, Pencil, X, Filter } from "lucide-react";
 import { useInventory } from "../context/inventory-context";
 import { useAuth } from "../context/auth-context";
 import { Product, DailyInventory, NewProductInput } from "../types";
@@ -21,6 +21,7 @@ const Edit = Pencil;
 
 type DrawerState = null | "item-view" | "edit-mode";
 type SelectionMode = "none" | "delete" | "archive";
+const FILTER_DROPDOWN_PAGE_SIZE = 6;
 
 function parseUiDate(value: string): Date | null {
   const trimmed = value.trim();
@@ -181,6 +182,8 @@ export function InventoryPage() {
   const [brandFilter, setBrandFilter] = useState("Brand:");
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [showBrandDropdown, setShowBrandDropdown] = useState(false);
+  const [categoryPage, setCategoryPage] = useState(0);
+  const [brandPage, setBrandPage] = useState(0);
   const [showMovementOnly, setShowMovementOnly] = useState(false);
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
@@ -234,6 +237,24 @@ export function InventoryPage() {
   const brands = buildUniqueOptions(
     (activeProducts.map((p) => p.brand).filter(Boolean) as string[]).map(formatOptionDisplay)
   );
+  const categoryPageCount = Math.max(1, Math.ceil(categories.length / FILTER_DROPDOWN_PAGE_SIZE));
+  const brandPageCount = Math.max(1, Math.ceil(brands.length / FILTER_DROPDOWN_PAGE_SIZE));
+  const pagedCategories = categories.slice(
+    categoryPage * FILTER_DROPDOWN_PAGE_SIZE,
+    (categoryPage + 1) * FILTER_DROPDOWN_PAGE_SIZE
+  );
+  const pagedBrands = brands.slice(
+    brandPage * FILTER_DROPDOWN_PAGE_SIZE,
+    (brandPage + 1) * FILTER_DROPDOWN_PAGE_SIZE
+  );
+
+  useEffect(() => {
+    setCategoryPage((prev) => Math.min(prev, categoryPageCount - 1));
+  }, [categoryPageCount]);
+
+  useEffect(() => {
+    setBrandPage((prev) => Math.min(prev, brandPageCount - 1));
+  }, [brandPageCount]);
 
   // Filter products
   const filteredProducts = activeProducts.filter((product) => {
@@ -628,6 +649,7 @@ export function InventoryPage() {
                 onClick={() => {
                   setShowCategoryDropdown(!showCategoryDropdown);
                   setShowBrandDropdown(false);
+                  setCategoryPage(0);
                 }}
                 className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-xl text-sm hover:bg-gray-50 bg-white transition-all duration-200 hover:border-gray-400"
               >
@@ -652,7 +674,7 @@ export function InventoryPage() {
                     >
                       All Categories
                     </button>
-                    {categories.map((cat) => (
+                    {pagedCategories.map((cat) => (
                       <button
                         key={cat}
                         onClick={() => {
@@ -664,6 +686,33 @@ export function InventoryPage() {
                         {cat}
                       </button>
                     ))}
+                    {categories.length > FILTER_DROPDOWN_PAGE_SIZE && (
+                      <div className="flex items-center justify-between gap-2 border-t border-gray-200 px-3 py-2">
+                        <button
+                          type="button"
+                          onClick={() => setCategoryPage((prev) => Math.max(prev - 1, 0))}
+                          disabled={categoryPage === 0}
+                          aria-label="Previous category page"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-xs text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <ChevronLeft className="h-3.5 w-3.5" />
+                        </button>
+                        <span className="text-xs text-gray-500">
+                          {categoryPage + 1} of {categoryPageCount}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCategoryPage((prev) => Math.min(prev + 1, categoryPageCount - 1))
+                          }
+                          disabled={categoryPage >= categoryPageCount - 1}
+                          aria-label="Next category page"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-xs text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -675,6 +724,7 @@ export function InventoryPage() {
                 onClick={() => {
                   setShowBrandDropdown(!showBrandDropdown);
                   setShowCategoryDropdown(false);
+                  setBrandPage(0);
                 }}
                 className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-xl text-sm hover:bg-gray-50 bg-white transition-all duration-200 hover:border-gray-400"
               >
@@ -699,7 +749,7 @@ export function InventoryPage() {
                     >
                       All Brands
                     </button>
-                    {brands.map((brand) => (
+                    {pagedBrands.map((brand) => (
                       <button
                         key={brand}
                         onClick={() => {
@@ -711,6 +761,31 @@ export function InventoryPage() {
                         {brand}
                       </button>
                     ))}
+                    {brands.length > FILTER_DROPDOWN_PAGE_SIZE && (
+                      <div className="flex items-center justify-between gap-2 border-t border-gray-200 px-3 py-2">
+                        <button
+                          type="button"
+                          onClick={() => setBrandPage((prev) => Math.max(prev - 1, 0))}
+                          disabled={brandPage === 0}
+                          aria-label="Previous brand page"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-xs text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <ChevronLeft className="h-3.5 w-3.5" />
+                        </button>
+                        <span className="text-xs text-gray-500">
+                          {brandPage + 1} of {brandPageCount}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setBrandPage((prev) => Math.min(prev + 1, brandPageCount - 1))}
+                          disabled={brandPage >= brandPageCount - 1}
+                          aria-label="Next brand page"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-xs text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </motion.div>
                 )}
               </AnimatePresence>
