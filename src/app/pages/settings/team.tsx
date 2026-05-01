@@ -4,7 +4,7 @@ import { User, StaffPermissions } from "../../types";
 import { toast } from "sonner";
 import { getSupabase, isSupabaseConfigured } from "../../../lib/supabase";
 import bcrypt from "bcryptjs";
-import { UserPlus, ChevronDown } from "lucide-react";
+import { UserPlus, ChevronDown, Key, Shield, Eye, EyeOff, Loader2, Lock, X } from "lucide-react";
 import { formatDateForDB, logActivity as logDbActivity } from "../../../lib/db-utils";
 
 type ProfileRow = {
@@ -117,6 +117,17 @@ export function TeamManagementPage() {
     useState<StaffPermissions>(defaultStaffPerms);
   const [isCreatingUser, setIsCreatingUser] = useState(false);
   const [addUserError, setAddUserError] = useState("");
+  
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetTargetUser, setResetTargetUser] = useState<User | null>(null);
+  const [resetAdminPassword, setResetAdminPassword] = useState("");
+  const [resetNewPassword, setResetNewPassword] = useState("");
+  const [resetConfirmPassword, setResetConfirmPassword] = useState("");
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetError, setResetError] = useState("");
+  const [showAdminPass, setShowAdminPass] = useState(false);
+  const [showNewPass, setShowNewPass] = useState(false);
+  const [showConfirmPass, setShowConfirmPass] = useState(false);
 
   const canManageUsers = useMemo(() => currentUser?.role === "Admin", [currentUser?.role]);
 
@@ -619,6 +630,80 @@ export function TeamManagementPage() {
     void run();
   };
 
+  const handleResetPasswordClick = (target: User) => {
+    setResetTargetUser(target);
+    setResetAdminPassword("");
+    setResetNewPassword("");
+    setResetConfirmPassword("");
+    setResetError("");
+    setShowResetModal(true);
+  };
+
+  const handleConfirmResetPassword = async () => {
+    if (!canManageUsers) {
+      setResetError("Unauthorized action.");
+      return;
+    }
+    if (!resetTargetUser || !isSupabaseConfigured()) return;
+    
+    if (!resetAdminPassword) {
+      setResetError("Admin password is required.");
+      return;
+    }
+    if (!resetNewPassword || resetNewPassword.trim().length < 8) {
+      setResetError("New password must be at least 8 characters and not just spaces.");
+      return;
+    }
+    if (resetNewPassword !== resetConfirmPassword) {
+      setResetError("New passwords do not match.");
+      return;
+    }
+
+    setIsResetting(true);
+    setResetError("");
+    
+    try {
+      const validAdmin = await verifyCurrentAdminPassword(resetAdminPassword);
+      if (!validAdmin) {
+        setResetError("Incorrect admin password.");
+        setIsResetting(false);
+        return;
+      }
+
+      const supabase = getSupabase();
+      const hashedNewPassword = await bcrypt.hash(resetNewPassword, 10);
+      
+      const { error: updateError } = await supabase
+        .from("user_accounts")
+        .update({
+          password_hash: hashedNewPassword,
+          password_updated_at: new Date().toISOString(),
+        })
+        .eq("profile_id", resetTargetUser.id);
+        
+      if (updateError) throw updateError;
+      
+      if (currentUser) {
+        await logDbActivity({
+          snapshot_date: formatDateForDB(new Date()),
+          actor_profile_id: currentUser.id,
+          actor_username: currentUser.username,
+          actor_role: currentUser.role.toLowerCase(),
+          txn_type: "profile_edit",
+          note: `Admin reset password for staff account: ${resetTargetUser.username}`,
+        });
+      }
+      
+      toast.success(`Password reset for ${resetTargetUser.username} successful.`);
+      setShowResetModal(false);
+    } catch (err: any) {
+      console.error("Reset password error:", err);
+      setResetError("Failed to reset password.");
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
   const editingUser = users.find((u) => u.id === editingUserId);
 
   return (
@@ -678,6 +763,15 @@ export function TeamManagementPage() {
                       >
                         Permissions
                       </button>
+                      {canManageUsers && user.role === "Staff" && (
+                        <button
+                          onClick={() => handleResetPasswordClick(user)}
+                          className="px-4 py-1.5 text-xs rounded border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-1.5"
+                        >
+                          <Key className="w-3 h-3" />
+                          Reset Password
+                        </button>
+                      )}
                       {canManageUsers && !isCurrentUser && (
                         <button
                           onClick={() => handleAskDeleteUser(user)}
@@ -966,6 +1060,149 @@ export function TeamManagementPage() {
                 disabled={isDeletingUser}
               >
                 {isDeletingUser ? "Deleting..." : "Confirm Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showResetModal && resetTargetUser && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-[24px] max-w-lg w-full shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            {/* Header */}
+            <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-amber-100 rounded-lg">
+                  <Lock className="w-5 h-5 text-amber-600" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">Reset Staff Password</h3>
+                  <p className="text-xs text-gray-500">Updating security credentials for team member</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setShowResetModal(false)}
+                className="p-2 hover:bg-gray-200/50 rounded-full transition-colors"
+              >
+                <X className="w-5 h-5 text-gray-400" />
+              </button>
+            </div>
+
+            <div className="p-6">
+              {/* User Info Card */}
+              <div className="mb-6 p-4 bg-gray-50 rounded-2xl border border-gray-100 flex items-start gap-4">
+                <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center border border-gray-200 shadow-sm text-[#8B2E2E] font-bold">
+                  {resetTargetUser.name.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                  <div className="text-sm font-bold text-gray-900">{resetTargetUser.name}</div>
+                  <div className="text-xs text-gray-500">@{resetTargetUser.username}</div>
+                  {resetTargetUser.email && (
+                    <div className="text-xs text-gray-400 mt-0.5">{resetTargetUser.email}</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                {/* Admin Password */}
+                <div>
+                  <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5 block">
+                    Your Admin Password
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showAdminPass ? "text" : "password"}
+                      className="w-full h-11 rounded-xl border border-gray-300 pl-4 pr-10 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#8B2E2E]/20 transition-all"
+                      value={resetAdminPassword}
+                      onChange={(e) => setResetAdminPassword(e.target.value)}
+                      placeholder="Verify your identity"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowAdminPass(!showAdminPass)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    >
+                      {showAdminPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                  {/* New Password */}
+                  <div>
+                    <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5 block">
+                      New Password
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showNewPass ? "text" : "password"}
+                        className="w-full h-11 rounded-xl border border-gray-300 pl-4 pr-10 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#8B2E2E]/20 transition-all"
+                        value={resetNewPassword}
+                        onChange={(e) => setResetNewPassword(e.target.value)}
+                        placeholder="Min. 8 chars"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowNewPass(!showNewPass)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      >
+                        {showNewPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Confirm Password */}
+                  <div>
+                    <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5 block">
+                      Confirm New
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showConfirmPass ? "text" : "password"}
+                        className="w-full h-11 rounded-xl border border-gray-300 pl-4 pr-10 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#8B2E2E]/20 transition-all"
+                        value={resetConfirmPassword}
+                        onChange={(e) => setResetConfirmPassword(e.target.value)}
+                        placeholder="Repeat password"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPass(!showConfirmPass)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      >
+                        {showConfirmPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {resetError && (
+                  <div className="p-3 bg-red-50 border border-red-100 rounded-xl text-xs text-red-600 flex items-center gap-2">
+                    <Shield className="w-3.5 h-3.5" />
+                    {resetError}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="p-6 bg-gray-50/80 border-t border-gray-100 flex gap-3">
+              <button
+                onClick={() => setShowResetModal(false)}
+                className="flex-1 h-11 px-4 py-2 border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-white transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmResetPassword}
+                disabled={isResetting || !resetAdminPassword || !resetNewPassword || !resetConfirmPassword}
+                className="flex-[1.5] h-11 px-4 py-2 bg-[#8B2E2E] text-white rounded-xl text-sm font-bold hover:bg-[#B23A3A] disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-[#8B2E2E]/10 transition-all flex items-center justify-center gap-2"
+              >
+                {isResetting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  "Reset Staff Password"
+                )}
               </button>
             </div>
           </div>

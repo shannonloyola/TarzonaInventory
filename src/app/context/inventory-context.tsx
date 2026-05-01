@@ -689,9 +689,60 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       )
       .subscribe();
 
+    const txnChannel = supabase
+      .channel("inventory-transactions-realtime")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "inventory_transactions" },
+        async (payload) => {
+          const newRow = payload.new as TxnRow;
+          if (!newRow?.id) return;
+          
+          let actorFullName = newRow.actor_username;
+          let actorEmail = "";
+          
+          if (newRow.actor_profile_id) {
+            const { data } = await supabase
+              .from("profiles")
+              .select("full_name, email")
+              .eq("id", newRow.actor_profile_id)
+              .single();
+            if (data) {
+              actorFullName = data.full_name || actorFullName;
+              actorEmail = data.email || "";
+            }
+          }
+
+          const parsedTimestamp = new Date(newRow.created_at);
+          const safeTimestamp = isValid(parsedTimestamp)
+            ? format(parsedTimestamp, "EEE, MMM d, yyyy h:mm a")
+            : "Unknown time";
+
+          const newLog: ActivityLog = {
+            id: newRow.id,
+            userId: newRow.actor_profile_id || undefined,
+            timestamp: safeTimestamp,
+            userName: actorFullName,
+            userEmail: actorEmail,
+            userRole: newRow.actor_role === "admin" ? "Admin" : "Staff",
+            activity: newRow.note || "Inventory activity",
+            productId: newRow.product_id || undefined,
+            productName: newRow.product_name || undefined,
+          };
+
+          setActivityLogs((prev) => {
+            const exists = prev.some((l) => l.id === newLog.id);
+            if (exists) return prev;
+            return [newLog, ...prev];
+          });
+        }
+      )
+      .subscribe();
+
     return () => {
       void supabase.removeChannel(productsChannel);
       void supabase.removeChannel(snapshotChannel);
+      void supabase.removeChannel(txnChannel);
     };
   }, [supabaseConfigured]);
 

@@ -12,7 +12,8 @@ export type TransactionType =
   | 'permission_change'
   | 'beginning_set'
   | 'stock_in'
-  | 'stock_out';
+  | 'stock_out'
+  | 'staff_password_reset';
 
 export interface ActivityLogEntry {
   snapshot_date: string; // YYYY-MM-DD
